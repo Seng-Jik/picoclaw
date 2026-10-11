@@ -538,6 +538,42 @@ func TestPublishAudioChunk_BackpressureDropPublishesRuntimeEvent(t *testing.T) {
 	}
 }
 
+func TestSetBackpressureTimeoutOverridesAudioDefault(t *testing.T) {
+	mb := NewMessageBus()
+	defer mb.Close()
+
+	mb.SetBackpressureTimeout(StreamAudioChunk, 5*time.Millisecond)
+
+	for i := range cap(mb.audioChunks) {
+		if err := mb.PublishAudioChunk(context.Background(), AudioChunk{
+			Channel:  "discord",
+			ChatID:   "voice-room",
+			Sequence: uint64(i),
+			Data:     []byte("fill"),
+		}); err != nil {
+			t.Fatalf("fill audio buffer at %d: %v", i, err)
+		}
+	}
+
+	err := mb.PublishAudioChunk(context.Background(), AudioChunk{
+		Channel:  "discord",
+		ChatID:   "voice-room",
+		Sequence: 999,
+		Data:     []byte("overflow"),
+	})
+	if !errors.Is(err, ErrBusBackpressure) {
+		t.Fatalf("PublishAudioChunk() error = %v, want %v", err, ErrBusBackpressure)
+	}
+
+	stats := mb.Stats()
+	if stats.AudioChunks.DroppedTotal != 1 {
+		t.Fatalf("AudioChunks dropped = %d, want 1", stats.AudioChunks.DroppedTotal)
+	}
+	if stats.AudioChunks.LastDropWaitMillis != 5 {
+		t.Fatalf("AudioChunks last wait ms = %d, want 5", stats.AudioChunks.LastDropWaitMillis)
+	}
+}
+
 func TestPublishVoiceControlSubscribe(t *testing.T) {
 	mb := NewMessageBus()
 	defer mb.Close()

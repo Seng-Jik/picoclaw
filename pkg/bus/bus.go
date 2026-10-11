@@ -27,9 +27,10 @@ var (
 
 const defaultBusBufferSize = 64
 
-const (
-	defaultAudioPublishTimeout = 150 * time.Millisecond
-)
+// defaultAudioPublishTimeout is the default backpressure drop budget for audio
+// chunks. It seeds the per-stream budget registry (see SetBackpressureTimeout)
+// and can be overridden via SetBackpressureTimeout(StreamAudioChunk, d).
+const defaultAudioPublishTimeout = 150 * time.Millisecond
 
 // Stream identifiers used in publish policies, stats, per-stream backpressure
 // configuration, and runtime events.
@@ -140,7 +141,9 @@ func NewMessageBus() *MessageBus {
 		voiceControls: make(chan VoiceControl, defaultBusBufferSize),
 		done:          make(chan struct{}),
 	}
-	mb.backpressure.Store(map[string]time.Duration{})
+	mb.backpressure.Store(map[string]time.Duration{
+		StreamAudioChunk: defaultAudioPublishTimeout,
+	})
 	return mb
 }
 
@@ -303,7 +306,7 @@ func (mb *MessageBus) OutboundMediaChan() <-chan OutboundMediaMessage {
 func (mb *MessageBus) PublishAudioChunk(ctx context.Context, chunk AudioChunk) error {
 	if err := publish(ctx, mb, mb.audioChunks, chunk, publishPolicy{
 		stream:  StreamAudioChunk,
-		timeout: defaultAudioPublishTimeout,
+		timeout: mb.backpressureTimeout(StreamAudioChunk),
 	}, &mb.audioStats, runtimeScopeFromAudioChunk(chunk)); err != nil {
 		scope := runtimeScopeFromAudioChunk(chunk)
 		if !errors.Is(err, ErrBusBackpressure) {
