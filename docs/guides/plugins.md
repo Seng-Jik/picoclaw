@@ -231,7 +231,8 @@ Legacy `sse` selects the actual HTTP+SSE protocol here; this does not change the
 historical interpretation of `sse` in native PicoClaw MCP configuration.
 
 Literal credentials do not belong in portable package `env` or `headers`.
-For a remote MCP server, a header can refer to a host environment variable:
+For a remote MCP server, a header in a host `mcp_overrides` entry can refer to
+a host environment variable:
 
 ```json
 "headers": {"Authorization": "Bearer ${REMOTE_API_KEY}"}
@@ -241,9 +242,13 @@ Set `REMOTE_API_KEY` in the environment of the PicoClaw process. References
 are resolved once when the server connects. An unset or empty variable, an
 invalid reference, or a resolved header containing invalid HTTP characters
 disables that server with a diagnostic that does not contain the secret.
-Review a package's header references before enabling it: they select which
-host environment values are sent to its MCP endpoint. Stdio processes still
-receive only their explicitly configured environment.
+
+This expansion is host-only. A `${VAR}` reference written in a portable package
+`mcp.json` is sent literally and never reads the host environment; only headers
+provided through `plugins.entries.<id>.mcp_overrides.<server>` are expanded.
+Review the override's header references before enabling a plugin: they select
+which host environment values are sent to its MCP endpoint. Stdio processes
+still receive only their explicitly configured environment.
 
 Alternatively, for a server that accepts a bearer token, put it alone in a
 file under that installation's `PLUGIN_DATA` directory and configure it on
