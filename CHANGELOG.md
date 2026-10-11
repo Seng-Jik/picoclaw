@@ -36,6 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Renamed protected read files.
 - Refactored cron enable/disable commands and dropped the unused payload kind field.
 - Consolidated shared helpers for paths, strings, MIME extension mapping and inline content sanitization.
+- Indexed `message_parts` by `message_id` for faster lookups.
+- Lowered the recommended session prune `max_db_size_mb` to 128.
 - DeltaChat channel: safer credentials handling, more configuration options and improved documentation.
 - Bumped Go to 1.27.2 and `golang.org/x/net` to v0.60.0.
 
@@ -60,9 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frontend: override the vulnerable `lodash-es` dependency.
 - Providers: support `openai-go` v3.70.0.
 - SubTurn: remove send-on-closed-channel race and finish turns gracefully on natural completion.
+- Cron: allow clearing a scheduled command without confirmation and mark jobs skipped when no handler is configured.
+- Search tool: stop directory traversal, skip special files before opening and paginate only displayed results.
+- Agent: preserve loop-detection warnings and allow status polling.
+- Providers: canonicalize the Keenable API header.
 - Steering: inject post-response messages only once and let steering interrupt critical loop termination.
-- Tools: route `AsyncExecutor` tools through `ExecuteAsync`, avoid logging tool argument values and guard media store reads.
-- Plugins: reject package FIFOs before opening, restrict resource reads and MCP header env expansion, and hide plugin host paths from skill prompts.
+- Tools: route `AsyncExecutor` tools through `ExecuteAsync`, allow `timeout=0` on background exec runs, and avoid logging tool argument values and guard media store reads.
+- Plugins: omit the plugin usage hint without a resource tool, reject package FIFOs before opening, restrict resource reads and MCP header env expansion, and hide plugin host paths from skill prompts.
 - Image/voice: pin downloads to public IP addresses, scale response limits with media size and synchronize TTS provider reload.
 - MCP: limit inherited stdio environment, allow OAuth store loading on Windows and accept case-insensitive localhost endpoints.
 - Authentication: use configured scopes when refreshing OAuth tokens and adapt the Copilot provider to SDK v1.
