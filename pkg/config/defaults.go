@@ -614,7 +614,6 @@ func defaultChannels() ChannelsConfig {
 			"settings": map[string]any{
 				"ping_interval":   30,
 				"read_timeout":    60,
-				"write_timeout":   10,
 				"max_connections": 100,
 				"streaming":       map[string]any{"enabled": true},
 			},
