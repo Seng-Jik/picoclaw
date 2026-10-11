@@ -44,9 +44,13 @@ const (
 
 type publishPolicy struct {
 	stream string
-	// timeout is the backpressure drop budget. When positive, a full channel
-	// causes the message to be dropped after this duration. When zero, the
-	// publish blocks until context cancellation or bus close (no drop).
+	// timeout is the per-stream backpressure drop budget resolved at publish
+	// time from the budget registry (see SetBackpressureTimeout). When
+	// positive, a full channel causes the message to be dropped after this
+	// duration. When zero, the publish blocks until context cancellation or
+	// bus close (no drop). Defaults: 0 for critical streams (inbound,
+	// outbound, outbound_media, voice_control) and defaultAudioPublishTimeout
+	// for audio_chunk; both are overridable per stream.
 	timeout time.Duration
 }
 
@@ -185,8 +189,10 @@ func publish[T any](
 
 	// timeout == 0 means no backpressure drop budget; block until context
 	// cancellation or bus close. This is the default for critical streams
-	// (inbound, outbound, outboundMedia, voiceControl) where dropping
-	// messages silently is undesirable.
+	// (inbound, outbound, outbound_media, voice_control) where dropping
+	// messages silently is undesirable. A positive budget (as configured for
+	// audio chunks) drops the message once the queue stays full for the
+	// budget. Override either behavior with SetBackpressureTimeout.
 	if policy.timeout > 0 {
 		timer := time.NewTimer(policy.timeout)
 		defer timer.Stop()
