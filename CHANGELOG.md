@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Summarization and compaction reporting on channels.
 - Pruning of old tool results before context compression.
 - Five parallel turns by default.
+- Protection of workspace secret files from filesystem reads.
 
 ### Changed
 
@@ -49,6 +50,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SeaHorse: delete `messages_fts` rows by rowid to avoid O(n^2) clears, batch-load message parts in `GetMessages`, apply `busy_timeout` to every connection and avoid needless `VACUUM`s.
 - Session pruning: keep session config on save, never age-prune on an untrustworthy clock, always keep the most recently active session, and prune every agent's session store.
 - Agent: invalidate prompt cache when daily notes change, serialize concurrent daily-note appends, and make SeaHorse `Close` wait for the prune loop.
+- Isolation: probe optional bubblewrap (`bwrap`) namespaces so the sandbox still works when optional namespaces are unavailable.
+- Channel manager: fix a send-on-closed-channel race.
+- HTTP server: do not exit the process on a shared HTTP server error.
+- Agent: omit the cron tool from scheduled turns.
+- Commands: correct `/model` list behavior.
+- Plugins: secure plugin data directories and escape plugin hook context.
+- Web UI: paginate long chat history and constrain the fallback chain dialog.
+- Frontend: override the vulnerable `lodash-es` dependency.
+- Providers: support `openai-go` v3.70.0.
 - SubTurn: remove send-on-closed-channel race and finish turns gracefully on natural completion.
 - Steering: inject post-response messages only once and let steering interrupt critical loop termination.
 - Tools: route `AsyncExecutor` tools through `ExecuteAsync`, avoid logging tool argument values and guard media store reads.
