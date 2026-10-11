@@ -175,11 +175,12 @@ a matching directory/name and a nonempty description.
 Skills appear as `<installation-id>:<skill-name>`, preserving the original
 frontmatter. Validated skill bodies are snapshots until configuration reload.
 Loading or removing plugin skills invalidates the prompt cache.
-
-The host provides a plugin-specific `read_resource` tool, with a `plugin_` name prefix, for bundled references
-and assets. Its name is included in the loaded skill instructions. Paths are
+The host provides a plugin-specific `read_resource` tool, with a `plugin_` name
+prefix, for bundled references. Its name is included in the loaded skill
+instructions. It accepts only UTF-8 text paths under `skills/` or `references/`,
 relative to the plugin root; reads are bounded to 2 MiB and cannot follow links
-outside it. This avoids granting general filesystem access outside the agent's
+outside it. Binary assets and files outside those two directories are not
+readable. This avoids granting general filesystem access outside the agent's
 workspace. The tool is subject to the agent's normal tool allowlist.
 
 ## MCP servers
