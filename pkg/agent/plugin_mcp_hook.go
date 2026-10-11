@@ -22,7 +22,12 @@ import (
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
-const pluginMCPHookTimeout = 5 * time.Second
+const (
+	pluginMCPHookTimeout = 5 * time.Second
+	// maxCachedTurnResults bounds the per-turn memory cache so a missed
+	// turn-end event cannot grow it without limit in a long-lived process.
+	maxCachedTurnResults = 256
+)
 
 // pluginMCPHook executes a plugin's declarative MCP action at PicoClaw hook
 // points. The plugin supplies the tool and argument template; PicoClaw owns
@@ -101,6 +106,9 @@ func (h *pluginMCPHook) cacheTurnResult(turnID, result string) {
 	}
 	h.cacheMu.Lock()
 	defer h.cacheMu.Unlock()
+	if len(h.turnResults) >= maxCachedTurnResults {
+		h.turnResults = make(map[string]string, maxCachedTurnResults)
+	}
 	h.turnResults[turnID] = result
 }
 
