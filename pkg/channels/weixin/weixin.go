@@ -33,6 +33,10 @@ type WeixinChannel struct {
 	pauseUntil        time.Time
 	syncBufPath       string
 	contextTokensPath string
+
+	// replies counts the messages sent to each user since their last inbound
+	// message, so tool feedback cannot use up the iLink reply allowance.
+	replies replyBudget
 }
 
 func init() {
@@ -288,6 +292,8 @@ func (c *WeixinChannel) handleInboundMessage(ctx context.Context, msg WeixinMess
 	if fromUserID == "" {
 		return
 	}
+	// iLink grants a fresh reply allowance for every inbound message.
+	c.replies.reset(fromUserID)
 
 	messageID := msg.ClientID
 	if messageID == "" {
@@ -424,7 +430,25 @@ func (c *WeixinChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 		return nil, fmt.Errorf("weixin send: %w: missing context token for chat %s", channels.ErrSendFailed, toUserID)
 	}
 
-	if err := c.sendTextMessage(ctx, toUserID, contextToken, msg.Content); err != nil {
+	text := msg.Content
+	if isToolFeedback(msg) {
+		switch c.replies.nextToolFeedback(toUserID) {
+		case toolFeedbackSend:
+		case toolFeedbackSendNotice:
+			logger.InfoCF("weixin", "Pausing tool feedback to keep replies for the final answer", map[string]any{
+				"to_user_id": toUserID,
+				"sent":       c.replies.sentTo(toUserID),
+			})
+			text = toolFeedbackPausedNotice
+		case toolFeedbackSkip:
+			logger.DebugCF("weixin", "Skipping tool feedback to keep replies for the final answer", map[string]any{
+				"to_user_id": toUserID,
+			})
+			return nil, nil
+		}
+	}
+
+	if err := c.sendTextMessage(ctx, toUserID, contextToken, text); err != nil {
 		logger.ErrorCF("weixin", "Failed to send message", map[string]any{
 			"to_user_id": toUserID,
 			"error":      err.Error(),

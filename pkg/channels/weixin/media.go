@@ -932,6 +932,7 @@ func (c *WeixinChannel) sendMessageItem(
 		}
 		return fmt.Errorf("sendmessage failed: ret=%d errcode=%d errmsg=%s", resp.Ret, resp.Errcode, resp.Errmsg)
 	}
+	c.replies.recordSent(toUserID)
 	return nil
 }
 
