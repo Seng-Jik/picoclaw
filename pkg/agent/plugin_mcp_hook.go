@@ -309,8 +309,7 @@ func (h *pluginMCPHook) OnRuntimeEvent(ctx context.Context, event runtimeevents.
 	variables["user_message"] = boundedHookText(hookString(hookMapValue(payload, "UserMessage")), 6000)
 	variables["assistant_message"] = boundedHookText(hookString(hookMapValue(payload, "FinalContent")), 6000)
 	if h.completedOnly && event.Kind == runtimeevents.KindAgentTurnEnd {
-		status := fmt.Sprint(hookMapValue(payload, "Status"))
-		if !strings.EqualFold(status, string(TurnEndStatusCompleted)) {
+		if !runtimeEventTurnCompleted(event) {
 			return nil
 		}
 		if strings.TrimSpace(variables["user_message"].(string)) == "" &&

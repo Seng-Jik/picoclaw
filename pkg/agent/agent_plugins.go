@@ -257,13 +257,14 @@ func (al *AgentLoop) publishPlugin(
 		}
 		initCtx, cancel := context.WithTimeout(ctx, cfg.Plugins.InitTimeout())
 		opts := ProcessHookOptions{
-			Command:      hook.Command,
-			Dir:          hook.Dir,
-			Env:          hook.Env,
-			ExactEnv:     true,
-			Config:       hook.Config,
-			Observe:      observe,
-			ObserveKinds: observeKinds,
+			Command:       hook.Command,
+			Dir:           hook.Dir,
+			Env:           hook.Env,
+			ExactEnv:      true,
+			Config:        hook.Config,
+			Observe:       observe,
+			ObserveKinds:  observeKinds,
+			CompletedOnly: slices.Contains(hook.Observe, "turn_completed"),
 			InterceptLLM: slices.Contains(hook.Intercept, "before_llm") ||
 				slices.Contains(hook.Intercept, "after_llm"),
 			InterceptTool: slices.Contains(hook.Intercept, "before_tool") ||

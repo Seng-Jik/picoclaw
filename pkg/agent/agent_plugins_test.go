@@ -229,6 +229,27 @@ func TestPluginHookScope(t *testing.T) {
 	}
 }
 
+func TestRuntimeEventTurnCompletedGate(t *testing.T) {
+	completed := runtimeevents.Event{
+		Kind:    runtimeevents.KindAgentTurnEnd,
+		Payload: TurnEndPayload{Status: TurnEndStatusCompleted},
+	}
+	failed := runtimeevents.Event{
+		Kind:    runtimeevents.KindAgentTurnEnd,
+		Payload: TurnEndPayload{Status: TurnEndStatusError},
+	}
+	other := runtimeevents.Event{Kind: runtimeevents.KindAgentLLMRequest}
+	if !runtimeEventTurnCompleted(completed) {
+		t.Fatal("completed turn end was not recognized")
+	}
+	if runtimeEventTurnCompleted(failed) {
+		t.Fatal("failed turn end was treated as completed")
+	}
+	if !runtimeEventTurnCompleted(other) {
+		t.Fatal("non turn-end event must not be gated")
+	}
+}
+
 func TestOfficialMem0PluginRemoteMCPAndNativeHooks(t *testing.T) {
 	t.Setenv("MEM0_API_KEY", "test-mem0-token")
 	type searchInput struct {
