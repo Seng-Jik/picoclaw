@@ -241,6 +241,19 @@ func TestPluginMCPHookCacheIsBounded(t *testing.T) {
 	}
 }
 
+func TestBoundedHookTextKeepsValidUTF8(t *testing.T) {
+	if got := boundedHookText("  hi  ", 100); got != "hi" {
+		t.Fatalf("trim = %q", got)
+	}
+	// "é" is two bytes; a byte limit must not leave a dangling continuation byte.
+	if got := boundedHookText("aé", 2); got != "a" {
+		t.Fatalf("truncation = %q", got)
+	}
+	if got := boundedHookText("abc", 2); got != "ab" {
+		t.Fatalf("ascii truncation = %q", got)
+	}
+}
+
 func TestRuntimeEventTurnCompletedGate(t *testing.T) {
 	completed := runtimeevents.Event{
 		Kind:    runtimeevents.KindAgentTurnEnd,

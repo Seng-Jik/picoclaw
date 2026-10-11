@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
@@ -547,10 +546,7 @@ func (h *pluginMCPHook) clean(content string) string {
 func boundedHookText(content string, limit int) string {
 	content = strings.TrimSpace(content)
 	if len(content) > limit {
-		content = content[:limit]
-		for !utf8.ValidString(content) {
-			content = content[:len(content)-1]
-		}
+		content = strings.ToValidUTF8(content[:limit], "")
 	}
 	return content
 }
