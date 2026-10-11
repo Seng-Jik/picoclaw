@@ -154,6 +154,8 @@ func (p *Pipeline) ExecuteTools(
 		}
 	}
 
+	feedback := newToolFeedbackBatch(al, ts, exec)
+
 toolLoop:
 	for i, tc := range normalizedToolCalls {
 		if ts.hardAbortRequested() {
@@ -229,26 +231,7 @@ toolLoop:
 						},
 					)
 
-					if shouldPublishToolFeedback(al.cfg, ts) && ts.channel != "pico" {
-						toolFeedbackMaxLen := al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength()
-						toolFeedbackExplanation := toolFeedbackExplanationForToolCall(
-							exec.response,
-							tc,
-							messages,
-						)
-						feedbackMsg := utils.FormatToolFeedbackMessage(
-							toolName,
-							toolFeedbackExplanation,
-							toolFeedbackArgsPreview(toolArgs, toolFeedbackMaxLen),
-						)
-						fbCtx, fbCancel := context.WithTimeout(turnCtx, 3*time.Second)
-						_ = al.bus.PublishOutbound(fbCtx, outboundMessageForTurnWithOptions(
-							ts,
-							feedbackMsg,
-							outboundTurnMessageOptions{kind: messageKindToolFeedback},
-						))
-						fbCancel()
-					}
+					feedback.publish(turnCtx, i, tc, toolName, toolArgs, messages)
 
 					toolDuration := time.Duration(0)
 
@@ -525,26 +508,7 @@ toolLoop:
 			},
 		)
 
-		if shouldPublishToolFeedback(al.cfg, ts) && ts.channel != "pico" {
-			toolFeedbackMaxLen := al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength()
-			toolFeedbackExplanation := toolFeedbackExplanationForToolCall(
-				exec.response,
-				tc,
-				messages,
-			)
-			feedbackMsg := utils.FormatToolFeedbackMessage(
-				toolName,
-				toolFeedbackExplanation,
-				toolFeedbackArgsPreview(toolArgs, toolFeedbackMaxLen),
-			)
-			fbCtx, fbCancel := context.WithTimeout(turnCtx, 3*time.Second)
-			_ = al.bus.PublishOutbound(fbCtx, outboundMessageForTurnWithOptions(
-				ts,
-				feedbackMsg,
-				outboundTurnMessageOptions{kind: messageKindToolFeedback},
-			))
-			fbCancel()
-		}
+		feedback.publish(turnCtx, i, tc, toolName, toolArgs, messages)
 
 		toolCallID := tc.ID
 		asyncToolName := toolName
