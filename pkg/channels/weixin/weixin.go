@@ -429,7 +429,9 @@ func (c *WeixinChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 			"to_user_id": toUserID,
 			"error":      err.Error(),
 		})
-		if c.remainingPause() > 0 {
+		// iLink rejected the message (or the session is paused): resending the
+		// same message cannot succeed, so don't let the manager retry it.
+		if c.remainingPause() > 0 || isAPIRejection(err) {
 			return nil, fmt.Errorf("weixin send: %w", channels.ErrSendFailed)
 		}
 		return nil, fmt.Errorf("weixin send: %w", channels.ErrTemporary)

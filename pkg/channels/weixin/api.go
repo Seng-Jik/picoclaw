@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -130,6 +131,27 @@ func (c *ApiClient) GetUpdates(ctx context.Context, req GetUpdatesReq) (*GetUpda
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// apiError is a well-formed iLink response that rejected the request with a
+// non-zero ret or errcode, e.g. ret=-2 "prepare failed", which has been
+// observed once a chat has used up its reply allowance. Unlike a transport
+// failure, sending the same request again does not succeed.
+type apiError struct {
+	op      string
+	ret     int
+	errcode int
+	errmsg  string
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("%s failed: ret=%d errcode=%d errmsg=%s", e.op, e.ret, e.errcode, e.errmsg)
+}
+
+// isAPIRejection reports whether err is, or wraps, an iLink API rejection.
+func isAPIRejection(err error) bool {
+	var apiErr *apiError
+	return errors.As(err, &apiErr)
 }
 
 func (c *ApiClient) SendMessage(ctx context.Context, req SendMessageReq) (*SendMessageResp, error) {
