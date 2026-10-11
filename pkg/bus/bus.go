@@ -349,8 +349,21 @@ func (mb *MessageBus) Stats() MessageBusStats {
 // across all streams. It always reports ok=true: backpressure-induced drops are
 // reflected in the message string for telemetry but do not affect the boolean.
 // Callers that need readiness semantics (e.g. returning 503 when drops occur)
-// should inspect Stats() directly and apply their own threshold logic.
+// should use HealthCheckWithThreshold.
 func (mb *MessageBus) HealthCheck() (bool, string) {
+	_, message := mb.healthSnapshot()
+	return true, message
+}
+
+// HealthCheckWithThreshold behaves like HealthCheck but reports ok=false when
+// the cumulative number of dropped messages across all streams exceeds
+// maxDrops. Use maxDrops=0 to fail readiness on the first drop.
+func (mb *MessageBus) HealthCheckWithThreshold(maxDrops uint64) (bool, string) {
+	totalDropped, message := mb.healthSnapshot()
+	return totalDropped <= maxDrops, message
+}
+
+func (mb *MessageBus) healthSnapshot() (uint64, string) {
 	stats := mb.Stats()
 	totalDropped := stats.Inbound.DroppedTotal +
 		stats.Outbound.DroppedTotal +
@@ -372,7 +385,7 @@ func (mb *MessageBus) HealthCheck() (bool, string) {
 		totalDropped,
 	)
 
-	return true, message
+	return totalDropped, message
 }
 
 func snapshotStreamStats[T any](ch chan T, stats *streamStats) StreamStats {
