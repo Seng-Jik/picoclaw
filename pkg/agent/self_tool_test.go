@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -201,7 +202,8 @@ func TestSelfToolMaxIterationsIsSessionScoped(t *testing.T) {
 			t.Errorf("max_iterations accepted invalid value %#v", value)
 		}
 	}
-	if result := runSelfTool(tool, selfTestContext("session-3"), "set", "max_iterations", float64(5), true); !result.IsError {
+	result := runSelfTool(tool, selfTestContext("session-3"), "set", "max_iterations", float64(5), true)
+	if !result.IsError {
 		t.Error("max_iterations changed outside an active agent turn")
 	}
 }
@@ -249,7 +251,9 @@ func TestSelfToolContextWindowTokensIsReadOnlyWithRealRuntime(t *testing.T) {
 	if f.baseAgent.ContextWindow != want {
 		t.Fatalf("context window changed to %d, want %d", f.baseAgent.ContextWindow, want)
 	}
-	if got := runSelfTool(f.selfTool, ctx, "check", "context_window_tokens", nil, false).ForLLM; got != fmt.Sprint(want) {
+	if got := runSelfTool(f.selfTool, ctx, "check", "context_window_tokens", nil, false).ForLLM; got != fmt.Sprint(
+		want,
+	) {
 		t.Fatalf("check after rejected set = %q, want %d", got, want)
 	}
 }
@@ -355,4 +359,69 @@ func nestedSelfValue(depth int) any {
 		value = []any{value}
 	}
 	return value
+}
+
+func TestRedactedConfigSnapshotHidesCredentials(t *testing.T) {
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{Defaults: config.AgentDefaults{MaxTokens: 4096, ModelName: "local"}},
+		ModelList: []*config.ModelConfig{{
+			ModelName:     "local",
+			Model:         "openai/local-model",
+			APIKeys:       config.SimpleSecureStrings("sk-secret-model-key"),
+			CustomHeaders: map[string]string{"Authorization": "Bearer leak"},
+		}},
+		Voice: config.VoiceConfig{ElevenLabsAPIKey: "elevenlabs-secret"},
+		Tools: config.ToolsConfig{
+			MCP: config.MCPConfig{Servers: map[string]config.MCPServerConfig{
+				"demo": {Command: "run", Env: map[string]string{
+					"OPENAI_API_KEY": "sk-env-secret",
+					"PLAIN":          "ok",
+				}},
+			}},
+		},
+	}
+
+	view := redactedConfigSnapshot(cfg)
+	encoded, err := json.Marshal(view)
+	if err != nil {
+		t.Fatalf("redacted snapshot is not JSON: %v", err)
+	}
+	text := string(encoded)
+	for _, secret := range []string{"sk-secret-model-key", "elevenlabs-secret", "sk-env-secret", "Bearer leak"} {
+		if strings.Contains(text, secret) {
+			t.Errorf("snapshot leaked %q: %s", secret, text)
+		}
+	}
+
+	defaults, _ := view["agents"].(map[string]any)["defaults"].(map[string]any)
+	if defaults["max_tokens"] != float64(4096) {
+		t.Errorf("max_tokens was redacted: %v", defaults["max_tokens"])
+	}
+	env, _ := view["tools"].(map[string]any)["mcp"].(map[string]any)["servers"].(map[string]any)["demo"].(map[string]any)["env"].(map[string]any)
+	if env["PLAIN"] != "ok" {
+		t.Errorf("non-secret env value was lost: %v", env)
+	}
+	if env["OPENAI_API_KEY"] != selfRedactedValue {
+		t.Errorf("secret env value = %v, want %q", env["OPENAI_API_KEY"], selfRedactedValue)
+	}
+}
+
+func TestSelfToolExposesRedactedConfigReadOnly(t *testing.T) {
+	agent := &AgentInstance{
+		ID: "main", modelMu: &sync.RWMutex{}, Tools: tools.NewToolRegistry(), MaxIterations: 20,
+	}
+	cfg := &config.Config{Voice: config.VoiceConfig{ElevenLabsAPIKey: "top-secret"}}
+	tool := NewSelfTool(&agentRuntimeControl{agent: agent, cfg: cfg}, true)
+	ctx := selfTestContext("session-1")
+
+	got := runSelfTool(tool, ctx, "check", "", nil, false).ForLLM
+	if !strings.Contains(got, `"config"`) {
+		t.Fatalf("snapshot is missing the config field: %s", got)
+	}
+	if strings.Contains(got, "top-secret") {
+		t.Fatalf("snapshot leaked a credential: %s", got)
+	}
+	if result := runSelfTool(tool, ctx, "set", "config.voice.elevenlabs_api_key", "x", true); !result.IsError {
+		t.Fatal("set on a config path was accepted")
+	}
 }

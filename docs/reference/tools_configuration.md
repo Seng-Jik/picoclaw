@@ -40,8 +40,9 @@ See [Sensitive Data Filtering](../security/sensitive_data_filtering.md) for full
 ## Runtime self-inspection
 
 The `self` tool is disabled by default. When enabled, it exposes a filtered view
-of the current agent and request, including the workspace path and the web and
-exec settings, and keeps a temporary scratchpad per session (cleared by
+of the current agent and request, including the workspace path, the web and
+exec settings, and the full PicoClaw configuration with credentials removed
+(`config`), and keeps a temporary scratchpad per session (cleared by
 `/clear`). Writes are disabled by default; enabling `allow_set` permits
 scratchpad writes and two changes that apply only to the session that makes
 them: `max_iterations` (1–100, effective immediately) and `model_preset` (a
@@ -62,11 +63,14 @@ restart.
 Environment variables: `PICOCLAW_TOOLS_SELF_ENABLED` and `PICOCLAW_TOOLS_SELF_ALLOW_SET`.
 
 The tool rejects credential-like keys and excludes provider credentials from
-its runtime snapshot. `context_window_tokens` is read-only through the tool;
-change it in configuration. A direct `model` write is rejected; use
-`model_preset` instead. `max_iterations` needs a session key, so turns without
-one cannot change it. Runtime options that PicoClaw does not currently
-implement are not exposed as writable fields.
+its runtime snapshot. `config` returns the whole configuration as read-only,
+JSON-safe data: `SecureString` fields are dropped and secret-like keys (for
+example `api_key`, `token`, `secret`, `password`, MCP `env` entries, or
+`Authorization` headers) are shown as `[REDACTED]`. `context_window_tokens` is
+read-only through the tool; change it in configuration. A direct `model` write
+is rejected; use `model_preset` instead. `max_iterations` needs a session key,
+so turns without one cannot change it. Runtime options that PicoClaw does not
+currently implement are not exposed as writable fields.
 
 ## Protected local files
 

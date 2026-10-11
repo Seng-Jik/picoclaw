@@ -55,7 +55,9 @@ func (t *SelfTool) Description() string {
 		"- check (key): inspect a value; dot paths are supported (for example, " +
 		"web_config.enabled or request.channel). Available fields include " +
 		"max_iterations, context_window_tokens, model, model_preset, model_presets, " +
-		"workspace, tool_names, web_config, exec_config, and request.channel/chat_id/sender_id.\n" +
+		"workspace, tool_names, config, web_config, exec_config, and request.channel/chat_id/sender_id.\n" +
+		"config holds the full PicoClaw configuration with credentials removed " +
+		"(secure fields are dropped and secret-like keys are shown as [REDACTED]).\n" +
 		"- set (key, value): change max_iterations (integer 1–100) for this session, " +
 		"effective immediately, select a configured " +
 		"model_preset for this session (effective next turn), or store a JSON-safe " +
@@ -63,7 +65,7 @@ func (t *SelfTool) Description() string {
 		"session, cleared by /clear, lost on restart, and limited to 64 keys, 128-byte keys, " +
 		"1024 bytes of JSON per value, and 10 levels of nesting.\n" +
 		"Direct model changes are disabled. context_window_tokens and the runtime snapshot " +
-		"fields workspace, web_config, exec_config, model_presets, tool_names, and request " +
+		"fields workspace, config, web_config, exec_config, model_presets, tool_names, and request " +
 		"are read-only.\n" +
 		"Use check for model/settings questions or to diagnose tool behavior; check " +
 		"context_window_tokens and max_iterations before a large task. Use model_preset " +
@@ -293,6 +295,7 @@ func (c *agentRuntimeControl) Snapshot(ctx context.Context) map[string]any {
 			"timeout_seconds":      c.cfg.Tools.Exec.TimeoutSeconds,
 		}
 		view["model_presets"] = presets
+		view["config"] = redactedConfigSnapshot(c.cfg)
 	}
 	return view
 }
@@ -455,7 +458,23 @@ func selfSessionID(ctx context.Context) string {
 }
 
 var selfSensitiveParts = []string{
-	"api_key", "secret", "password", "token", "credential", "private_key", "access_token", "refresh_token", "auth",
+	"api_key", "secret", "password", "passphrase", "token", "credential", "private_key",
+	"access_token", "refresh_token", "auth",
+}
+
+// selfNonSensitiveKeys lists configuration keys whose names contain a sensitive
+// substring but do not hold a credential, so the heuristic does not redact
+// harmless settings such as the token budget.
+var selfNonSensitiveKeys = map[string]bool{
+	"auth_method":             true,
+	"allow_token_query":       true,
+	"context_window_tokens":   true,
+	"default_token_budget":    true,
+	"max_tokens":              true,
+	"max_tokens_field":        true,
+	"max_total_tokens":        true,
+	"oauth":                   true,
+	"summarize_token_percent": true,
 }
 
 func validateSelfPath(path string) error {
@@ -465,8 +484,7 @@ func validateSelfPath(path string) error {
 		return nil
 	}
 	for _, part := range strings.Split(path, ".") {
-		lower := strings.ToLower(part)
-		if part == "" || selfSensitiveName(lower) {
+		if part == "" || selfSensitiveName(part) {
 			return fmt.Errorf("access denied")
 		}
 	}
@@ -474,6 +492,11 @@ func validateSelfPath(path string) error {
 }
 
 func selfSensitiveName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	name = strings.NewReplacer("-", "_", " ", "_").Replace(name)
+	if selfNonSensitiveKeys[name] {
+		return false
+	}
 	for _, part := range selfSensitiveParts {
 		if strings.Contains(name, part) {
 			return true
@@ -491,6 +514,7 @@ func isSelfReadOnly(path string) bool {
 		"model_presets",
 		"workspace",
 		"request",
+		"config",
 		"context_window_tokens":
 		return true
 	default:
