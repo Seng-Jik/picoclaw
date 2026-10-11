@@ -837,6 +837,38 @@ func TestPublishInbound_FullBufferUsesBusBackpressureBudget(t *testing.T) {
 	}
 }
 
+func TestSetBackpressureTimeoutDropsFullCriticalStream(t *testing.T) {
+	mb := NewMessageBus()
+	defer mb.Close()
+
+	mb.SetBackpressureTimeout(StreamInbound, 20*time.Millisecond)
+
+	for i := range defaultBusBufferSize {
+		if err := mb.PublishInbound(context.Background(), InboundMessage{
+			Context: InboundContext{Channel: "test", ChatID: "chat-fill", SenderID: "user-fill"},
+			Content: "fill",
+		}); err != nil {
+			t.Fatalf("fill failed at %d: %v", i, err)
+		}
+	}
+
+	err := mb.PublishInbound(context.Background(), InboundMessage{
+		Context: InboundContext{Channel: "test", ChatID: "chat-overflow", SenderID: "user-overflow"},
+		Content: "overflow",
+	})
+	if !errors.Is(err, ErrBusBackpressure) {
+		t.Fatalf("PublishInbound() error = %v, want %v", err, ErrBusBackpressure)
+	}
+
+	stats := mb.Stats()
+	if stats.Inbound.DroppedTotal != 1 {
+		t.Fatalf("Inbound dropped = %d, want 1", stats.Inbound.DroppedTotal)
+	}
+	if stats.Inbound.LastDropWaitMillis != 20 {
+		t.Fatalf("Inbound last wait ms = %d, want 20", stats.Inbound.LastDropWaitMillis)
+	}
+}
+
 func TestMessageBusHealthCheckIncludesQueueDepthAndDrops(t *testing.T) {
 	mb := NewMessageBus()
 	defer mb.Close()

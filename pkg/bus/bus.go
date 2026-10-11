@@ -31,6 +31,16 @@ const (
 	defaultAudioPublishTimeout = 150 * time.Millisecond
 )
 
+// Stream identifiers used in publish policies, stats, per-stream backpressure
+// configuration, and runtime events.
+const (
+	StreamInbound       = "inbound"
+	StreamOutbound      = "outbound"
+	StreamOutboundMedia = "outbound_media"
+	StreamAudioChunk    = "audio_chunk"
+	StreamVoiceControl  = "voice_control"
+)
+
 type publishPolicy struct {
 	stream string
 	// timeout is the backpressure drop budget. When positive, a full channel
@@ -106,6 +116,8 @@ type MessageBus struct {
 	publishMu      sync.Mutex
 	streamDelegate atomic.Value // stores StreamDelegate
 	eventPublisher atomic.Value // stores EventPublisher
+	backpressureMu sync.Mutex
+	backpressure   atomic.Value // stores map[string]time.Duration
 	inboundStats   streamStats
 	outboundStats  streamStats
 	mediaStats     streamStats
@@ -120,7 +132,7 @@ type EventPublisher interface {
 }
 
 func NewMessageBus() *MessageBus {
-	return &MessageBus{
+	mb := &MessageBus{
 		inbound:       make(chan InboundMessage, defaultBusBufferSize),
 		outbound:      make(chan OutboundMessage, defaultBusBufferSize),
 		outboundMedia: make(chan OutboundMediaMessage, defaultBusBufferSize),
@@ -128,6 +140,8 @@ func NewMessageBus() *MessageBus {
 		voiceControls: make(chan VoiceControl, defaultBusBufferSize),
 		done:          make(chan struct{}),
 	}
+	mb.backpressure.Store(map[string]time.Duration{})
+	return mb
 }
 
 func (mb *MessageBus) enterPublish(ctx context.Context) error {
@@ -216,15 +230,16 @@ func publish[T any](
 func (mb *MessageBus) PublishInbound(ctx context.Context, msg InboundMessage) error {
 	msg = NormalizeInboundMessage(msg)
 	if msg.Context.isZero() {
-		mb.publishFailure("inbound", runtimeScopeFromInboundContext(msg.Context), ErrMissingInboundContext)
+		mb.publishFailure(StreamInbound, runtimeScopeFromInboundContext(msg.Context), ErrMissingInboundContext)
 		return ErrMissingInboundContext
 	}
 	if err := publish(ctx, mb, mb.inbound, msg, publishPolicy{
-		stream: "inbound",
+		stream:  StreamInbound,
+		timeout: mb.backpressureTimeout(StreamInbound),
 	}, &mb.inboundStats, runtimeScopeFromInboundContext(msg.Context)); err != nil {
 		scope := runtimeScopeFromInboundContext(msg.Context)
 		if !errors.Is(err, ErrBusBackpressure) {
-			mb.publishFailure("inbound", scope, err)
+			mb.publishFailure(StreamInbound, scope, err)
 		}
 		return err
 	}
@@ -238,15 +253,16 @@ func (mb *MessageBus) InboundChan() <-chan InboundMessage {
 func (mb *MessageBus) PublishOutbound(ctx context.Context, msg OutboundMessage) error {
 	msg = NormalizeOutboundMessage(msg)
 	if msg.Context.isZero() {
-		mb.publishFailure("outbound", runtimeScopeFromInboundContext(msg.Context), ErrMissingOutboundContext)
+		mb.publishFailure(StreamOutbound, runtimeScopeFromInboundContext(msg.Context), ErrMissingOutboundContext)
 		return ErrMissingOutboundContext
 	}
 	if err := publish(ctx, mb, mb.outbound, msg, publishPolicy{
-		stream: "outbound",
+		stream:  StreamOutbound,
+		timeout: mb.backpressureTimeout(StreamOutbound),
 	}, &mb.outboundStats, runtimeScopeFromInboundContext(msg.Context)); err != nil {
 		scope := runtimeScopeFromInboundContext(msg.Context)
 		if !errors.Is(err, ErrBusBackpressure) {
-			mb.publishFailure("outbound", scope, err)
+			mb.publishFailure(StreamOutbound, scope, err)
 		}
 		return err
 	}
@@ -260,15 +276,20 @@ func (mb *MessageBus) OutboundChan() <-chan OutboundMessage {
 func (mb *MessageBus) PublishOutboundMedia(ctx context.Context, msg OutboundMediaMessage) error {
 	msg = NormalizeOutboundMediaMessage(msg)
 	if msg.Context.isZero() {
-		mb.publishFailure("outbound_media", runtimeScopeFromInboundContext(msg.Context), ErrMissingOutboundMediaContext)
+		mb.publishFailure(
+			StreamOutboundMedia,
+			runtimeScopeFromInboundContext(msg.Context),
+			ErrMissingOutboundMediaContext,
+		)
 		return ErrMissingOutboundMediaContext
 	}
 	if err := publish(ctx, mb, mb.outboundMedia, msg, publishPolicy{
-		stream: "outbound_media",
+		stream:  StreamOutboundMedia,
+		timeout: mb.backpressureTimeout(StreamOutboundMedia),
 	}, &mb.mediaStats, runtimeScopeFromInboundContext(msg.Context)); err != nil {
 		scope := runtimeScopeFromInboundContext(msg.Context)
 		if !errors.Is(err, ErrBusBackpressure) {
-			mb.publishFailure("outbound_media", scope, err)
+			mb.publishFailure(StreamOutboundMedia, scope, err)
 		}
 		return err
 	}
@@ -281,12 +302,12 @@ func (mb *MessageBus) OutboundMediaChan() <-chan OutboundMediaMessage {
 
 func (mb *MessageBus) PublishAudioChunk(ctx context.Context, chunk AudioChunk) error {
 	if err := publish(ctx, mb, mb.audioChunks, chunk, publishPolicy{
-		stream:  "audio_chunk",
+		stream:  StreamAudioChunk,
 		timeout: defaultAudioPublishTimeout,
 	}, &mb.audioStats, runtimeScopeFromAudioChunk(chunk)); err != nil {
 		scope := runtimeScopeFromAudioChunk(chunk)
 		if !errors.Is(err, ErrBusBackpressure) {
-			mb.publishFailure("audio_chunk", scope, err)
+			mb.publishFailure(StreamAudioChunk, scope, err)
 		}
 		return err
 	}
@@ -299,11 +320,12 @@ func (mb *MessageBus) AudioChunksChan() <-chan AudioChunk {
 
 func (mb *MessageBus) PublishVoiceControl(ctx context.Context, ctrl VoiceControl) error {
 	if err := publish(ctx, mb, mb.voiceControls, ctrl, publishPolicy{
-		stream: "voice_control",
+		stream:  StreamVoiceControl,
+		timeout: mb.backpressureTimeout(StreamVoiceControl),
 	}, &mb.voiceStats, runtimeScopeFromVoiceControl(ctrl)); err != nil {
 		scope := runtimeScopeFromVoiceControl(ctrl)
 		if !errors.Is(err, ErrBusBackpressure) {
-			mb.publishFailure("voice_control", scope, err)
+			mb.publishFailure(StreamVoiceControl, scope, err)
 		}
 		return err
 	}
@@ -322,6 +344,37 @@ func (mb *MessageBus) SetStreamDelegate(d StreamDelegate) {
 // SetEventPublisher registers a runtime event publisher for bus errors and lifecycle events.
 func (mb *MessageBus) SetEventPublisher(p EventPublisher) {
 	mb.eventPublisher.Store(p)
+}
+
+// SetBackpressureTimeout overrides the backpressure drop budget for a stream
+// (see the StreamXxx constants). When timeout > 0, a publish that cannot
+// enqueue within the budget while its queue is full is dropped with
+// ErrBusBackpressure. When timeout <= 0 the publish blocks until context
+// cancellation or bus close (no drop). Streams without an explicit override
+// block (timeout 0).
+func (mb *MessageBus) SetBackpressureTimeout(stream string, timeout time.Duration) {
+	if timeout < 0 {
+		timeout = 0
+	}
+	mb.backpressureMu.Lock()
+	defer mb.backpressureMu.Unlock()
+
+	current, _ := mb.backpressure.Load().(map[string]time.Duration)
+	next := make(map[string]time.Duration, len(current)+1)
+	for name, value := range current {
+		next[name] = value
+	}
+	next[stream] = timeout
+	mb.backpressure.Store(next)
+}
+
+// backpressureTimeout returns the configured drop budget for a stream, or 0
+// (block until cancellation/close) when the stream has no override.
+func (mb *MessageBus) backpressureTimeout(stream string) time.Duration {
+	if timeouts, ok := mb.backpressure.Load().(map[string]time.Duration); ok {
+		return timeouts[stream]
+	}
+	return 0
 }
 
 // GetStreamer returns a Streamer for the given channel+chatID+session via the delegate.
