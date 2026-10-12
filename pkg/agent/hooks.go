@@ -284,13 +284,17 @@ func (hm *HookManager) Mount(reg HookRegistration) error {
 	}
 
 	hm.mu.Lock()
-	defer hm.mu.Unlock()
-
-	if existing, ok := hm.hooks[reg.Name]; ok {
-		closeHookIfPossible(existing.Hook)
-	}
+	existing, hadExisting := hm.hooks[reg.Name]
 	hm.hooks[reg.Name] = reg
 	hm.rebuildOrdered()
+	hm.mu.Unlock()
+
+	// Close the replaced hook outside the lock: ProcessHook.Close can block
+	// while it waits for or kills the child process, and holding the write
+	// lock would stall every concurrent hook invocation.
+	if hadExisting {
+		closeHookIfPossible(existing.Hook)
+	}
 	return nil
 }
 
@@ -300,13 +304,16 @@ func (hm *HookManager) Unmount(name string) {
 	}
 
 	hm.mu.Lock()
-	defer hm.mu.Unlock()
+	existing, existed := hm.hooks[name]
+	if existed {
+		delete(hm.hooks, name)
+		hm.rebuildOrdered()
+	}
+	hm.mu.Unlock()
 
-	if existing, ok := hm.hooks[name]; ok {
+	if existed {
 		closeHookIfPossible(existing.Hook)
 	}
-	delete(hm.hooks, name)
-	hm.rebuildOrdered()
 }
 
 func (hm *HookManager) dispatchRuntimeEvents(ch <-chan runtimeevents.Event) {
@@ -631,13 +638,17 @@ func (hm *HookManager) snapshotHooks() []HookRegistration {
 
 func (hm *HookManager) closeAllHooks() {
 	hm.mu.Lock()
-	defer hm.mu.Unlock()
-
+	hooks := make([]any, 0, len(hm.hooks))
 	for name, reg := range hm.hooks {
-		closeHookIfPossible(reg.Hook)
+		hooks = append(hooks, reg.Hook)
 		delete(hm.hooks, name)
 	}
 	hm.ordered = nil
+	hm.mu.Unlock()
+
+	for _, hook := range hooks {
+		closeHookIfPossible(hook)
+	}
 }
 
 func (hm *HookManager) runRuntimeObserver(
