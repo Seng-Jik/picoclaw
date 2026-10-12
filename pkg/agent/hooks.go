@@ -409,9 +409,11 @@ func (hm *HookManager) applyBeforeLLMControls(
 	}
 	if !llmHookToolDefinitionsUnchanged(current.Tools, next.Tools) {
 		if existingToolDefinitionsChanged(current.Tools, next.Tools) {
-			logger.WarnCF("hooks", "Hook attempted to modify or remove existing tool definitions; preserving originals", map[string]any{
-				"hook": hookName,
-			})
+			logger.WarnCF(
+				"hooks",
+				"Hook attempted to modify or remove existing tool definitions; preserving originals",
+				map[string]any{"hook": hookName},
+			)
 		}
 		next.Tools = mergeHookAddedToolDefinitions(current.Tools, next.Tools)
 	}
