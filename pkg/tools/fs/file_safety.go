@@ -196,23 +196,20 @@ func isSensitivePath(path string, blockEnvTemplates bool) bool {
 }
 
 func isProtectedSystemWritePath(path string) bool {
-	protected := []struct {
-		path string
-		dir  bool
-	}{
-		{path: "/etc/sudoers"},
-		{path: "/etc/passwd"},
-		{path: "/etc/shadow"},
-		{path: "/etc/sudoers.d", dir: true},
-		{path: "/etc/systemd", dir: true},
+	protected := []string{
+		"/etc/sudoers",
+		"/etc/passwd",
+		"/etc/shadow",
+		"/etc/sudoers.d",
+		"/etc/systemd",
 	}
 	for _, target := range protected {
-		roots := []string{filepath.Clean(target.path)}
-		if resolved, err := resolvePathAgainstExistingAncestor(target.path); err == nil && resolved != roots[0] {
+		roots := []string{filepath.Clean(target)}
+		if resolved, err := resolvePathAgainstExistingAncestor(target); err == nil && resolved != roots[0] {
 			roots = append(roots, resolved)
 		}
 		for _, root := range roots {
-			if (!target.dir && filepath.Clean(path) == root) || (target.dir && isWithinWorkspace(path, root)) {
+			if matchesProtectedRelativePath(filepath.Dir(root), path, []string{filepath.Base(root)}) {
 				return true
 			}
 		}
@@ -228,11 +225,11 @@ func isWorkspaceSessionPath(path, workspace string) bool {
 	if err != nil {
 		return false
 	}
-	if isWithinWorkspace(path, root) {
+	if matchesProtectedRelativePath(filepath.Dir(root), path, []string{"sessions"}) {
 		return true
 	}
 	resolved, err := resolvePathAgainstExistingAncestor(root)
-	return err == nil && isWithinWorkspace(path, resolved)
+	return err == nil && isWithinProtectedPath(path, resolved)
 }
 
 func isAppCredentialPath(path string) bool {
@@ -269,7 +266,7 @@ func isWithinProtectedRoot(path, root string, protectedPaths []string) bool {
 	}
 	for _, protected := range protectedPaths {
 		resolved, err := resolvePathAgainstExistingAncestor(filepath.Join(home, filepath.FromSlash(protected)))
-		if err == nil && isWithinWorkspace(path, resolved) {
+		if err == nil && isWithinProtectedPath(path, resolved) {
 			return true
 		}
 	}
@@ -277,8 +274,8 @@ func isWithinProtectedRoot(path, root string, protectedPaths []string) bool {
 }
 
 func matchesProtectedRelativePath(root, path string, protectedPaths []string) bool {
-	rel, err := filepath.Rel(root, path)
-	if err != nil || rel == ".." || filepath.IsAbs(rel) || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	rel, within := protectedRelativePath(root, path)
+	if !within {
 		return false
 	}
 	rel = strings.ToLower(filepath.ToSlash(rel))
@@ -288,4 +285,33 @@ func matchesProtectedRelativePath(root, path string, protectedPaths []string) bo
 		}
 	}
 	return false
+}
+
+func isWithinProtectedPath(path, root string) bool {
+	_, within := protectedRelativePath(root, path)
+	return within
+}
+
+func protectedRelativePath(root, path string) (string, bool) {
+	rel, err := filepath.Rel(root, path)
+	if err == nil && (rel == "." || filepath.IsLocal(rel)) {
+		return rel, true
+	}
+	if !isWithinWorkspace(strings.ToLower(path), strings.ToLower(root)) {
+		return "", false
+	}
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return "", false
+	}
+	// Confirm identity before accepting a differently cased root.
+	for current := filepath.Clean(path); ; current = filepath.Dir(current) {
+		if info, statErr := os.Stat(current); statErr == nil && os.SameFile(rootInfo, info) {
+			rel, err = filepath.Rel(current, path)
+			return rel, err == nil && (rel == "." || filepath.IsLocal(rel))
+		}
+		if filepath.Dir(current) == current {
+			return "", false
+		}
+	}
 }

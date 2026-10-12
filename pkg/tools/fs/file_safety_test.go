@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -222,5 +223,105 @@ func TestFileSafetySymlinkedCredentialTargets(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestFileSafetyCaseInsensitivePaths(t *testing.T) {
+	workspace := t.TempDir()
+	home := filepath.Join(workspace, "AppHome")
+	if err := os.Mkdir(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	homeAlias := filepath.Join(workspace, "apphome")
+	if _, err := os.Stat(homeAlias); os.IsNotExist(err) {
+		t.Skip("requires a case-insensitive filesystem")
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PICOCLAW_HOME", home)
+	t.Setenv("CODEX_HOME", home)
+	for _, name := range []string{"auth.json", "auth/mcp/token.txt", "plugin-data/demo/token.txt", "channels/weixin/context-tokens/account.json", "sessions/chat.jsonl"} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(home, filepath.FromSlash(name))
+			alias := filepath.Join(homeAlias, filepath.FromSlash(strings.ToUpper(name)))
+			if name == "sessions/chat.jsonl" {
+				alias = filepath.Join(home, filepath.FromSlash(strings.ToUpper(name)))
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("TOP_SECRET"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, restrict := range []bool{false, true} {
+				if name != "sessions/chat.jsonl" {
+					result := NewReadFileTool(home, restrict, MaxReadFileSize).Execute(
+						context.Background(), map[string]any{"path": alias},
+					)
+					if !result.IsError {
+						t.Errorf("case alias exposed credentials, restrict=%v: %+v", restrict, result)
+					}
+				}
+				for _, tool := range []interface {
+					Execute(ctx context.Context, args map[string]any) *ToolResult
+				}{
+					NewWriteFileTool(home, restrict), NewEditFileTool(home, restrict), NewAppendFileTool(home, restrict),
+				} {
+					result := tool.Execute(context.Background(), map[string]any{
+						"path": alias, "content": "changed", "overwrite": true,
+						"old_text": "TOP_SECRET", "new_text": "changed",
+					})
+					if !result.IsError {
+						t.Errorf("case alias write allowed, restrict=%v: %+v", restrict, result)
+					}
+				}
+			}
+			data, err := os.ReadFile(path)
+			if err != nil || string(data) != "TOP_SECRET" {
+				t.Fatalf("protected contents changed: %q, %v", data, err)
+			}
+		})
+	}
+	for _, name := range []string{"AUTH.JSON", "AUTH/MCP/new/token.txt", "SESSIONS/new/chat.jsonl"} {
+		freshHome := t.TempDir()
+		t.Setenv("PICOCLAW_HOME", freshHome)
+		result := NewWriteFileTool(freshHome, false).Execute(context.Background(), map[string]any{
+			"path": filepath.Join(strings.ToUpper(freshHome), filepath.FromSlash(name)), "content": "new",
+		})
+		if !result.IsError {
+			t.Errorf("new protected file allowed: %s", name)
+		}
+	}
+	if runtime.GOOS != "windows" {
+		for _, path := range []string{"/ETC/PASSWD", "/ETC/SUDOERS", "/ETC/SYSTEMD/new.service"} {
+			if err := checkSensitiveWritePath(path, "", false); err == nil {
+				t.Errorf("system case alias allowed: %s", path)
+			}
+		}
+	}
+}
+
+func TestProtectedRelativePathDistinctRoots(t *testing.T) {
+	workspace := t.TempDir()
+	root := filepath.Join(workspace, "AppHome")
+	other := filepath.Join(workspace, "apphome")
+	for _, path := range []string{root, other} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherInfo, err := os.Stat(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(rootInfo, otherInfo) {
+		t.Skip("requires a case-sensitive filesystem")
+	}
+	if _, within := protectedRelativePath(root, filepath.Join(other, "auth.json")); within {
+		t.Fatal("distinct directories must not be treated as the same root")
 	}
 }
