@@ -7340,3 +7340,71 @@ func TestRunWorkerPanicReleasesSessionTurnState(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestAgentLoop_Run_ReleasesMediaScopeAfterTurn(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+
+	store := media.NewFileMediaStore()
+	mediaPath := filepath.Join(tmpDir, "inbound.png")
+	if err := os.WriteFile(mediaPath, []byte{0x89, 0x50, 0x4E, 0x47}, 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	scope := "test:media-release-scope"
+	ref, err := store.Store(mediaPath, media.MediaMeta{Filename: "inbound.png", ContentType: "image/png"}, scope)
+	if err != nil {
+		t.Fatalf("Store failed: %v", err)
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &simpleMockProvider{response: "ack"}
+	al := NewAgentLoop(cfg, msgBus, provider)
+	al.SetMediaStore(store)
+
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- al.Run(runCtx)
+	}()
+
+	pubCtx, pubCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer pubCancel()
+	if err := msgBus.PublishInbound(pubCtx, bus.InboundMessage{
+		Context: bus.InboundContext{
+			Channel:  "test",
+			ChatID:   "chat1",
+			ChatType: "direct",
+			SenderID: "user1",
+		},
+		Content:    "describe this image",
+		Media:      []string{ref},
+		MediaScope: scope,
+	}); err != nil {
+		t.Fatalf("PublishInbound failed: %v", err)
+	}
+
+	deadline := time.Now().Add(responseTimeout)
+	for {
+		_, resolveErr := store.Resolve(ref)
+		_, statErr := os.Stat(mediaPath)
+		if resolveErr != nil && os.IsNotExist(statErr) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("media scope not released after turn: resolveErr=%v statErr=%v", resolveErr, statErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
