@@ -91,6 +91,7 @@ func checkSensitiveReadPath(path, workspace string, restrict bool) error {
 	if err := checkNTNamespacePath(path); err != nil {
 		return err
 	}
+	path = stripExtendedDrivePrefix(path)
 	if !filepath.IsAbs(path) && restrict {
 		path = filepath.Join(workspace, path)
 	}
@@ -111,6 +112,7 @@ func checkSensitiveWritePath(path, workspace string, restrict bool) error {
 	if err := checkNTNamespacePath(path); err != nil {
 		return err
 	}
+	path = stripExtendedDrivePrefix(path)
 	if !filepath.IsAbs(path) && restrict {
 		path = filepath.Join(workspace, path)
 	}
@@ -150,6 +152,18 @@ func isNTNamespacePath(path string) bool {
 		return strings.HasPrefix(rest, `UNC\`) || strings.HasPrefix(rest, `GLOBALROOT\`)
 	}
 	return false
+}
+
+// stripExtendedDrivePrefix turns \\?\C:\x into C:\x so the credential checks see
+// the same path shape as a plain drive path; otherwise filepath.Rel against
+// the protected roots fails on the volume mismatch and the match is skipped.
+func stripExtendedDrivePrefix(path string) string {
+	p := strings.ReplaceAll(path, "/", `\`)
+	if len(p) >= 6 && strings.HasPrefix(p, `\\?\`) && p[5] == ':' &&
+		(p[4]|0x20 >= 'a' && p[4]|0x20 <= 'z') {
+		return p[4:]
+	}
+	return path
 }
 
 func isSensitiveReadPath(path string) bool {

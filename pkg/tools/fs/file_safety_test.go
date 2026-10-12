@@ -139,3 +139,20 @@ func TestFileSafetyBlocksProtectedMedia(t *testing.T) {
 		}
 	}
 }
+
+func TestStripExtendedDrivePrefix(t *testing.T) {
+	for in, want := range map[string]string{
+		`\\?\C:\Users\u\.picoclaw\auth.json`: `C:\Users\u\.picoclaw\auth.json`,
+		`//?/c:/Users/u/.picoclaw/auth.json`: `c:\Users\u\.picoclaw\auth.json`,
+		`C:\Users\u\auth.json`:               `C:\Users\u\auth.json`,
+		`\\?\UNC\host\share\x`:               `\\?\UNC\host\share\x`,
+		`/home/u/auth.json`:                  `/home/u/auth.json`,
+	} {
+		if got := stripExtendedDrivePrefix(in); got != want {
+			t.Errorf("stripExtendedDrivePrefix(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if isNTNamespacePath(`\\?\C:\x`) || !isNTNamespacePath(`\\?\UNC\h\s`) {
+		t.Error("drive-letter extended paths must pass the NT check; UNC must not")
+	}
+}
