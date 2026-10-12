@@ -276,8 +276,8 @@ cfg := agent.SubTurnConfig{
 
 | Constant | Value |
 |:---------|:------|
-| `maxSubTurnDepth` | 3 |
-| `maxConcurrentSubTurns` | 5 per `AgentLoop` |
+| `defaultMaxSubTurnDepth` | 3 (config: `agents.defaults.subturn.max_depth`) |
+| `defaultMaxConcurrentSubTurns` | 5 across the whole `AgentLoop` (config: `agents.defaults.subturn.max_concurrent`) |
 | `concurrencyTimeout` | 30s |
 | `defaultSubTurnTimeout` | 5m |
 | `maxEphemeralHistorySize` | 50 messages |
