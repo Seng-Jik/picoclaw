@@ -101,7 +101,6 @@ func TestTodoSubturnPlanCleanup(t *testing.T) {
 		turnID:         "parent",
 		agent:          agent,
 		pendingResults: make(chan *tools.ToolResult, 4),
-		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 	_, err := spawnSubTurn(context.Background(), al, parent, SubTurnConfig{Model: cfg.Agents.Defaults.ModelName})
 	if err != nil {

@@ -338,7 +338,6 @@ func registerSharedTools(
 						depth:          0,
 						session:        nil, // Ephemeral session not needed for adhoc spawn
 						pendingResults: make(chan *tools.ToolResult, 16),
-						concurrencySem: make(chan struct{}, 5),
 					}
 				}
 

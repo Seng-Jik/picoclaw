@@ -18,11 +18,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
-// Test constants (use defaults from subturn.go)
-const (
-	testMaxConcurrentSubTurns = defaultMaxConcurrentSubTurns
-)
-
 // ====================== Test Helper: Event Collector ======================
 type eventCollector struct {
 	mu     sync.Mutex
@@ -206,7 +201,6 @@ func TestSpawnSubTurn_EphemeralSessionIsolation(t *testing.T) {
 		turnID:         "parent-1",
 		depth:          0,
 		pendingResults: make(chan *tools.ToolResult, 4),
-		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 		session:        parentSession,
 	}
 
@@ -411,48 +405,6 @@ func TestDequeuePendingSubTurnResults(t *testing.T) {
 	}
 }
 
-// ====================== Extra Independent Test: Concurrency Semaphore ======================
-func TestSubTurnConcurrencySemaphore(t *testing.T) {
-	al, _, _, provider, cleanup := newTestAgentLoop(t)
-	_ = provider
-	defer cleanup()
-
-	parent := &turnState{
-		ctx:            context.Background(),
-		turnID:         "parent-concurrency",
-		depth:          0,
-		pendingResults: make(chan *tools.ToolResult, 10),
-		session:        &ephemeralSessionStore{},
-		concurrencySem: make(chan struct{}, 2), // Only allow 2 concurrent children
-	}
-
-	cfg := SubTurnConfig{Model: "gpt-4o-mini", Tools: []tools.Tool{}}
-
-	// Spawn 2 children — should succeed immediately
-	done := make(chan bool, 3)
-	for i := 0; i < 2; i++ {
-		go func() {
-			_, _ = spawnSubTurn(context.Background(), al, parent, cfg)
-			done <- true
-		}()
-	}
-
-	// Wait a bit to ensure the first 2 are running
-	// (In real scenario they'd be blocked in runTurn, but mockProvider returns immediately)
-	// So we just verify the semaphore doesn't block when under limit
-	<-done
-	<-done
-
-	// Verify semaphore is now full (2/2 slots used, but they already released)
-	// Since mockProvider returns immediately, semaphore is already released
-	// So we can't easily test blocking without a real long-running operation
-
-	// Instead, verify that semaphore exists and has correct capacity
-	if cap(parent.concurrencySem) != 2 {
-		t.Errorf("expected semaphore capacity 2, got %d", cap(parent.concurrencySem))
-	}
-}
-
 // ====================== Extra Independent Test: Hard Abort Cascading ======================
 func TestHardAbortCascading(t *testing.T) {
 	al, _, _, provider, cleanup := newTestAgentLoop(t)
@@ -470,7 +422,6 @@ func TestHardAbortCascading(t *testing.T) {
 		depth:          0,
 		session:        &ephemeralSessionStore{},
 		pendingResults: make(chan *tools.ToolResult, 16),
-		concurrencySem: make(chan struct{}, 5),
 		al:             al,
 	}
 	al.activeTurnStates.Store(sessionKey, rootTS)
@@ -555,7 +506,6 @@ func TestHardAbortSessionRollback(t *testing.T) {
 		session:              sess,
 		initialHistoryLength: 2, // Snapshot: 2 messages
 		pendingResults:       make(chan *tools.ToolResult, 16),
-		concurrencySem:       make(chan struct{}, 5),
 	}
 
 	// Register the turn state
@@ -632,7 +582,6 @@ func TestNestedSubTurnHierarchy(t *testing.T) {
 		depth:          0,
 		session:        rootSession,
 		pendingResults: make(chan *tools.ToolResult, 16),
-		concurrencySem: make(chan struct{}, 5),
 	}
 
 	// Spawn a child (depth 1)
@@ -740,7 +689,6 @@ func TestHardAbortOrderOfOperations(t *testing.T) {
 		session:              sess,
 		initialHistoryLength: 1, // Snapshot: 1 message
 		pendingResults:       make(chan *tools.ToolResult, 16),
-		concurrencySem:       make(chan struct{}, 5),
 	}
 
 	al.activeTurnStates.Store("test-session-order", rootTS)
@@ -971,7 +919,6 @@ func TestGetActiveTurn(t *testing.T) {
 		childTurnIDs:   []string{},
 		session:        newEphemeralSession(nil),
 		pendingResults: make(chan *tools.ToolResult, 16),
-		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 
 	sessionKey := "test-session"
@@ -1028,7 +975,6 @@ func TestGetActiveTurn_WithChildren(t *testing.T) {
 		childTurnIDs:   []string{"child-1", "child-2"},
 		session:        newEphemeralSession(nil),
 		pendingResults: make(chan *tools.ToolResult, 16),
-		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 
 	sessionKey := "test-session-with-children"
@@ -1060,7 +1006,6 @@ func TestTurnStateInfo_ThreadSafety(t *testing.T) {
 		childTurnIDs:   []string{},
 		session:        newEphemeralSession(nil),
 		pendingResults: make(chan *tools.ToolResult, 16),
-		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 
 	// Concurrently read Info() and modify childTurnIDs
@@ -1176,7 +1121,6 @@ func TestInterruptHard_Alias(t *testing.T) {
 		session:              newEphemeralSession(nil),
 		initialHistoryLength: 0,
 		pendingResults:       make(chan *tools.ToolResult, 16),
-		concurrencySem:       make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 
 	sessionKey := "test-session-interrupt"
@@ -1202,7 +1146,6 @@ func TestFinish_ConcurrentCalls(t *testing.T) {
 		turnID:         "parent-concurrent-finish",
 		depth:          0,
 		pendingResults: make(chan *tools.ToolResult, 16),
-		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 	parentTS.ctx, parentTS.cancelFunc = context.WithCancel(ctx)
 
@@ -1274,7 +1217,6 @@ func TestDeliverSubTurnResult_RaceWithFinish(t *testing.T) {
 		turnID:         "parent-race-test",
 		depth:          0,
 		pendingResults: make(chan *tools.ToolResult, 16),
-		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 	parentTS.ctx, parentTS.cancelFunc = context.WithCancel(ctx)
 
@@ -1357,14 +1299,13 @@ func TestConcurrencySemaphore_Timeout(t *testing.T) {
 		depth:          0,
 		session:        newEphemeralSession(nil),
 		pendingResults: make(chan *tools.ToolResult, 16),
-		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 	parentTS.ctx, parentTS.cancelFunc = context.WithCancel(ctx)
 	defer parentTS.Finish(false)
 
 	// Fill all concurrency slots
-	for i := 0; i < testMaxConcurrentSubTurns; i++ {
-		parentTS.concurrencySem <- struct{}{}
+	for i := 0; i < cap(al.subTurnSem); i++ {
+		al.subTurnSem <- struct{}{}
 	}
 
 	// Create a context with a very short timeout for testing
@@ -1400,8 +1341,8 @@ func TestConcurrencySemaphore_Timeout(t *testing.T) {
 	t.Logf("Timeout occurred after %v with error: %v", elapsed, err)
 
 	// Clean up - drain the semaphore
-	for i := 0; i < testMaxConcurrentSubTurns; i++ {
-		<-parentTS.concurrencySem
+	for i := 0; i < cap(al.subTurnSem); i++ {
+		<-al.subTurnSem
 	}
 }
 
@@ -1457,7 +1398,6 @@ func TestContextWrapping_SingleLayer(t *testing.T) {
 		depth:          0,
 		session:        newEphemeralSession(nil),
 		pendingResults: make(chan *tools.ToolResult, 16),
-		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 	parentTS.ctx, parentTS.cancelFunc = context.WithCancel(ctx)
 	defer parentTS.Finish(false)
@@ -1503,7 +1443,6 @@ func TestSyncSubTurn_NoChannelDelivery(t *testing.T) {
 		depth:          0,
 		session:        newEphemeralSession(nil),
 		pendingResults: make(chan *tools.ToolResult, 16),
-		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 	parentTS.ctx, parentTS.cancelFunc = context.WithCancel(ctx)
 	defer parentTS.Finish(false)
@@ -1560,7 +1499,6 @@ func TestAsyncSubTurn_ChannelDelivery(t *testing.T) {
 		depth:          0,
 		session:        newEphemeralSession(nil),
 		pendingResults: make(chan *tools.ToolResult, 16),
-		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 	parentTS.ctx, parentTS.cancelFunc = context.WithCancel(ctx)
 	defer parentTS.Finish(false)
@@ -1625,7 +1563,6 @@ func TestGrandchildAbort_CascadingCancellation(t *testing.T) {
 		depth:          0,
 		session:        newEphemeralSession(nil),
 		pendingResults: make(chan *tools.ToolResult, 16),
-		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 		childTurnIDs:   []string{"parent"},
 		al:             al,
 	}
@@ -1724,7 +1661,6 @@ func TestSpawnDuringAbort_RaceCondition(t *testing.T) {
 		depth:          0,
 		session:        newEphemeralSession(nil),
 		pendingResults: make(chan *tools.ToolResult, 16),
-		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 	parentTS.ctx, parentTS.cancelFunc = context.WithCancel(ctx)
 
@@ -1843,7 +1779,6 @@ func TestAsyncSubTurn_ParentFinishesEarly(t *testing.T) {
 		depth:          0,
 		session:        newEphemeralSession(nil),
 		pendingResults: make(chan *tools.ToolResult, 16),
-		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 	parentTS.ctx, parentTS.cancelFunc = context.WithCancel(ctx)
 
@@ -1916,7 +1851,6 @@ func TestAsyncSubTurn_ParentWaitsForChild(t *testing.T) {
 		depth:          0,
 		session:        newEphemeralSession(nil),
 		pendingResults: make(chan *tools.ToolResult, 16),
-		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 	parentTS.ctx, parentTS.cancelFunc = context.WithCancel(ctx)
 
@@ -2083,7 +2017,6 @@ func TestSubTurn_IndependentContext(t *testing.T) {
 		depth:          0,
 		session:        newEphemeralSession(nil),
 		pendingResults: make(chan *tools.ToolResult, 16),
-		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 	}
 	parentTS.ctx, parentTS.cancelFunc = context.WithCancel(ctx)
 
@@ -2215,7 +2148,6 @@ func TestSpawnSubTurn_TargetAgentID_UsesTargetAgent(t *testing.T) {
 		depth:          0,
 		childTurnIDs:   []string{},
 		pendingResults: make(chan *tools.ToolResult, 4),
-		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 		session:        &ephemeralSessionStore{},
 		agent:          alphaAgent,
 	}
@@ -2250,7 +2182,6 @@ func TestSpawnSubTurn_TargetAgentID_NotFound(t *testing.T) {
 		depth:          0,
 		childTurnIDs:   []string{},
 		pendingResults: make(chan *tools.ToolResult, 4),
-		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 		session:        &ephemeralSessionStore{},
 		agent:          alphaAgent,
 	}
@@ -2279,7 +2210,6 @@ func TestSpawnSubTurn_TargetAgentID_EmptyModelAccepted(t *testing.T) {
 		depth:          0,
 		childTurnIDs:   []string{},
 		pendingResults: make(chan *tools.ToolResult, 4),
-		concurrencySem: make(chan struct{}, testMaxConcurrentSubTurns),
 		session:        &ephemeralSessionStore{},
 		agent:          alphaAgent,
 	}

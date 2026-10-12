@@ -13,7 +13,7 @@ By using a SubTurn, an agent can break down a problem and run a separate LLM inv
 - **Context Isolation**: Each SubTurn uses an `ephemeralSessionStore`. Its message history does not leak into the parent task and is destroyed upon completion. The ephemeral session holds at most **50 messages**; older messages are automatically truncated when this limit is reached.
 - **Depth & Concurrency Limits**: Prevents infinite loops and resource exhaustion.
   - **Maximum Depth**: Up to 3 nested levels.
-  - **Maximum Concurrency**: `max_concurrent` sub-turns across the entire `AgentLoop`; excess spawns fail immediately. Parent semaphore acquisition still uses a 30-second timeout.
+  - **Maximum Concurrency**: `max_concurrent` sub-turns across the entire `AgentLoop`, shared by nested turns and independent sessions. Excess spawns wait up to 30 seconds for a free slot.
 - **Context Protection**: Supports soft context limits (`MaxContextRunes`). It proactively truncates old messages (while preserving system prompts and recent context) before hitting the provider's hard context window limit.
 - **Error Recovery**: Automatically detects and recovers from provider context length exceeded errors and truncation errors by compressing history and retrying.
 
@@ -221,9 +221,8 @@ ctx = withTurnState(ctx, turnState)
 |:------|:----------|
 | `ErrDepthLimitExceeded` | SubTurn depth exceeds 3 levels |
 | `ErrInvalidSubTurnConfig` | Required field `Model` is empty |
-| `ErrConcurrencyLimit` | The configured maximum number of concurrent sub-turns is already running |
-| `ErrConcurrencyTimeout` | Parent semaphore slots remain occupied for the configured timeout |
-| Context errors | Parent context cancelled during semaphore acquisition |
+| `ErrConcurrencyTimeout` | All `max_concurrent` slots stay occupied for the configured timeout |
+| Context errors | Parent context cancelled while waiting for a slot |
 
 ## Thread Safety
 

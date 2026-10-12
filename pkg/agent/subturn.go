@@ -293,8 +293,9 @@ func spawnSubTurn(
 	// Get effective SubTurn configuration
 	rtCfg := al.getSubTurnConfig()
 
-	// Enforce maxConcurrent across the whole AgentLoop, including nested turns.
-	// Waits up to concurrencyTimeout for a free slot instead of failing fast.
+	// Acquire a slot FIRST so it is released even if early validation fails.
+	// Enforces maxConcurrent across the whole AgentLoop, including nested turns, and waits
+	// up to concurrencyTimeout for a free slot. Also respects context cancellation.
 	if err = acquireSubTurnSlot(ctx, al.subTurnSem, rtCfg); err != nil {
 		return nil, err
 	}
@@ -306,39 +307,6 @@ func spawnSubTurn(
 		}
 	}
 	defer releaseGlobalSlot()
-
-	// 0. Acquire concurrency semaphore FIRST to ensure it's released even if early validation fails.
-	// Blocks if parent already has maxConcurrentSubTurns running, with a timeout to prevent indefinite blocking.
-	// Also respects context cancellation so we don't block forever if parent is aborted.
-	// NOTE: The semaphore is released immediately after runTurn completes (not in a defer) to
-	// ensure it is freed before the cleanup phase (async result delivery), which may block on
-	// a full pendingResults channel. Holding the semaphore through cleanup would allow the
-	// parent's goroutine to be blocked waiting for a semaphore slot while child turns are
-	// blocked delivering results — a deadlock.
-	var semAcquired bool
-	if parentTS.concurrencySem != nil {
-		// Create a timeout context for semaphore acquisition
-		timeoutCtx, cancel := context.WithTimeout(ctx, rtCfg.concurrencyTimeout)
-		defer cancel()
-
-		select {
-		case parentTS.concurrencySem <- struct{}{}:
-			semAcquired = true
-			defer func() {
-				if semAcquired {
-					<-parentTS.concurrencySem
-				}
-			}()
-		case <-timeoutCtx.Done():
-			// Check parent context first - if it was canceled, propagate that error
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			// Otherwise it's our timeout
-			return nil, fmt.Errorf("%w: all %d slots occupied for %v",
-				ErrConcurrencyTimeout, rtCfg.maxConcurrent, rtCfg.concurrencyTimeout)
-		}
-	}
 
 	// 1. Depth limit check
 	if parentTS.depth >= rtCfg.maxDepth {
@@ -445,7 +413,6 @@ func spawnSubTurn(
 	childTS.parentTurnID = parentTS.turnID
 	childTS.parentTurnState = parentTS
 	childTS.pendingResults = make(chan *tools.ToolResult, 16)
-	childTS.concurrencySem = make(chan struct{}, rtCfg.maxConcurrent)
 	childTS.al = al                  // back-ref for hard abort cascade
 	childTS.session = ephemeralStore // same store as agent.Sessions
 
@@ -523,16 +490,12 @@ func spawnSubTurn(
 	pipeline := NewPipeline(al)
 	turnRes, turnErr := al.runTurn(childCtx, childTS, pipeline)
 
-	// Release the concurrency semaphore immediately after runTurn completes,
+	// Release the concurrency slot immediately after runTurn completes,
 	// before the cleanup defer runs. This prevents a deadlock where:
-	// - All semaphore slots are held by sub-turns in their cleanup phase
+	// - All slots are held by sub-turns in their cleanup phase
 	// - Cleanup blocks on a full pendingResults channel
-	// - The parent goroutine is blocked waiting for a semaphore slot
-	// - The parent cannot consume pendingResults because it is blocked on the semaphore
-	if semAcquired {
-		<-parentTS.concurrencySem
-		semAcquired = false // prevent the defer from double-releasing
-	}
+	// - The parent goroutine is blocked waiting for a slot
+	// - The parent cannot consume pendingResults because it is blocked on the slot
 	releaseGlobalSlot()
 
 	// Convert turnResult to tools.ToolResult
