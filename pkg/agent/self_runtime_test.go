@@ -73,16 +73,19 @@ func TestSelfToolInspectsActiveTurnAndLastInput(t *testing.T) {
 			seen[message.ToolCallID] = true
 			switch message.ToolCallID {
 			case "inspect-turn":
+				value = value["turn"].(map[string]any)
 				if value["phase"] != "tools" || value["iteration"] != float64(1) ||
 					value["remaining_iterations"] != float64(9) || value["elapsed_ms"].(float64) < 0 {
 					t.Fatalf("unexpected active turn: %v", value)
 				}
 			case "inspect-provider":
+				value = value["context_usage"].(map[string]any)
 				if value["source"] != "provider" || value["used_tokens"] != float64(1200) ||
 					value["available_tokens"] != float64(32768-4096-1200) {
 					t.Fatalf("unexpected provider budget: %v", value)
 				}
 			case "inspect-estimate":
+				value = value["context_usage"].(map[string]any)
 				if value["source"] != "local_estimate" || value["used_tokens"] != float64(estimatedInput) {
 					t.Fatalf("missing usage reused a stale provider count: %v", value)
 				}
@@ -93,10 +96,10 @@ func TestSelfToolInspectsActiveTurnAndLastInput(t *testing.T) {
 			return &providers.LLMResponse{
 				Usage: &providers.UsageInfo{PromptTokens: 1200},
 				ToolCalls: []providers.ToolCall{
-					{ID: "inspect-turn", Name: "self", Arguments: map[string]any{"action": "check", "key": "turn"}},
+					{ID: "inspect-turn", Name: "self", Arguments: map[string]any{"action": "check"}},
 					{
 						ID: "inspect-provider", Name: "self",
-						Arguments: map[string]any{"action": "check", "key": "context_usage"},
+						Arguments: map[string]any{"action": "check"},
 					},
 				},
 			}, nil
@@ -108,7 +111,7 @@ func TestSelfToolInspectsActiveTurnAndLastInput(t *testing.T) {
 			return &providers.LLMResponse{ToolCalls: []providers.ToolCall{
 				{
 					ID: "inspect-estimate", Name: "self",
-					Arguments: map[string]any{"action": "check", "key": "context_usage"},
+					Arguments: map[string]any{"action": "check"},
 				},
 			}}, nil
 		default:
@@ -137,38 +140,34 @@ func TestSelfToolTurnIntrospectionIsReadOnlyAndSessionScoped(t *testing.T) {
 	if result := runSelfTool(f.selfTool, ctx, "set", "max_iterations", 2, true); result.IsError {
 		t.Fatal(result.ForLLM)
 	}
-	if got := runSelfTool(f.selfTool, ctx, "check", "turn.remaining_iterations", nil, false).ForLLM; got != "0" {
-		t.Fatalf("remaining iterations after decreasing limit = %s, want 0", got)
+	if got := selfSnapshot(t, f.selfTool, ctx)["turn"].(map[string]any)["remaining_iterations"]; got != float64(0) {
+		t.Fatalf("remaining iterations = %v, want 0", got)
 	}
 	otherCtx := f.turnContext("session-b")
-	if got := runSelfTool(f.selfTool, otherCtx, "check", "turn.remaining_iterations", nil, false).ForLLM; got != "10" {
-		t.Fatalf("session-a's limit leaked to session-b: %s", got)
+	if got := selfSnapshot(t, f.selfTool, otherCtx)["turn"].(map[string]any)["remaining_iterations"]; got != float64(
+		10,
+	) {
+		t.Fatalf("session-a's limit leaked to session-b: %v", got)
 	}
 	for _, turnCtx := range []context.Context{ctx, otherCtx, selfTestContext("session-c")} {
-		if got := runSelfTool(f.selfTool, turnCtx, "check", "context_usage", nil, false).ForLLM; got != "null" {
-			t.Fatalf("context usage before an LLM call = %s, want null", got)
+		if got := selfSnapshot(t, f.selfTool, turnCtx)["context_usage"]; got != nil {
+			t.Fatalf("context usage before an LLM call = %v", got)
 		}
 	}
-	ts.recordSelfContextUsage(nil, nil, &providers.UsageInfo{PromptTokens: 1000},
-		map[string]any{"max_tokens": 1024})
+	ts.recordSelfContextUsage(nil, nil, &providers.UsageInfo{PromptTokens: 1000}, map[string]any{"max_tokens": 1024})
 	if result := runSelfTool(f.selfTool, ctx, "set", "context_window_tokens", 8192, true); result.IsError {
 		t.Fatal(result.ForLLM)
 	}
-	if got := runSelfTool(
-		f.selfTool,
-		ctx,
-		"check",
-		"context_usage.available_tokens",
-		nil,
-		false,
-	).ForLLM; got != "6168" {
-		t.Fatalf("available tokens after changing the session window = %s, want 6168", got)
+	if got := selfSnapshot(t, f.selfTool, ctx)["context_usage"].(map[string]any)["available_tokens"]; got != float64(
+		6168,
+	) {
+		t.Fatalf("available tokens after changing the session window = %v, want 6168", got)
 	}
-	if got := runSelfTool(f.selfTool, otherCtx, "check", "context_usage", nil, false).ForLLM; got != "null" {
-		t.Fatalf("session-a's usage leaked to session-b: %s", got)
+	if got := selfSnapshot(t, f.selfTool, otherCtx)["context_usage"]; got != nil {
+		t.Fatalf("usage leaked: %v", got)
 	}
-	if got := runSelfTool(f.selfTool, selfTestContext("session-c"), "check", "turn", nil, false).ForLLM; got != "null" {
-		t.Fatalf("turn outside the active context = %s, want null", got)
+	if got := selfSnapshot(t, f.selfTool, selfTestContext("session-c"))["turn"]; got != nil {
+		t.Fatalf("inactive turn = %v", got)
 	}
 }
 
@@ -178,9 +177,8 @@ func TestSelfToolCheckReturnsCompleteArrays(t *testing.T) {
 		values[i] = "tool"
 	}
 	self := NewSelfTool(&selfToolTestRuntime{view: map[string]any{"tool_names": values}}, false)
-	result := runSelfTool(self, selfTestContext("session-a"), "check", "tool_names", nil, false)
-	var got []string
-	if err := json.Unmarshal([]byte(result.ForLLM), &got); err != nil || len(got) != len(values) {
-		t.Fatalf("check truncated the array: %s (%v)", result.ForLLM, err)
+	got := selfSnapshot(t, self, selfTestContext("session-a"))["tool_names"].([]any)
+	if len(got) != len(values) {
+		t.Fatalf("check truncated the array: %v", got)
 	}
 }

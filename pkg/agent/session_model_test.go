@@ -98,7 +98,7 @@ func TestSelfToolModelPresetIsSessionScopedAndStartsNextTurn(t *testing.T) {
 	if result := runSelfTool(f.selfTool, setContext, "set", "model_preset", "remote", true); result.IsError {
 		t.Fatalf("set model_preset: %s", result.ForLLM)
 	}
-	if got := runSelfTool(f.selfTool, setContext, "check", "model", nil, false).ForLLM; got != "local" {
+	if got := selfSnapshot(t, f.selfTool, setContext)["model"]; got != "local" {
 		t.Fatalf("model during active turn = %q, want local", got)
 	}
 	if f.baseAgent.Model != "local" {
@@ -198,7 +198,7 @@ func TestClearCommandDropsSessionRuntimeState(t *testing.T) {
 	f := newSessionModelFixture(t)
 	for _, session := range []string{"session-a", "session-b"} {
 		ctx := f.turnContext(session)
-		for key, value := range map[string]any{"model_preset": "remote", "max_iterations": float64(3), "note": "keep"} {
+		for key, value := range map[string]any{"model_preset": "remote", "max_iterations": float64(3), "context_window_tokens": 8192} {
 			if result := runSelfTool(f.selfTool, ctx, "set", key, value, true); result.IsError {
 				t.Fatalf("set %s for %s: %s", key, session, result.ForLLM)
 			}
@@ -218,8 +218,8 @@ func TestClearCommandDropsSessionRuntimeState(t *testing.T) {
 	if got := f.al.sessionIterationLimit(id, "session-a"); got != 0 {
 		t.Errorf("session-a kept max_iterations %d after /clear", got)
 	}
-	if result := runSelfTool(f.selfTool, f.turnContext("session-a"), "check", "note", nil, false); !result.IsError {
-		t.Error("session-a kept its scratchpad after /clear")
+	if got := f.al.sessionContextWindow(id, "session-a"); got != 0 {
+		t.Errorf("session-a kept context window %d after /clear", got)
 	}
 
 	if f.al.sessionModel(sessionModelKey{agentID: id, sessionKey: "session-b"}) == nil {
@@ -228,8 +228,8 @@ func TestClearCommandDropsSessionRuntimeState(t *testing.T) {
 	if got := f.al.sessionIterationLimit(id, "session-b"); got != 3 {
 		t.Errorf("session-b max_iterations = %d, want 3", got)
 	}
-	if result := runSelfTool(f.selfTool, f.turnContext("session-b"), "check", "note", nil, false); result.IsError {
-		t.Errorf("/clear in session-a removed the scratchpad of session-b: %s", result.ForLLM)
+	if got := f.al.sessionContextWindow(id, "session-b"); got != 8192 {
+		t.Errorf("session-b context window = %d, want 8192", got)
 	}
 }
 

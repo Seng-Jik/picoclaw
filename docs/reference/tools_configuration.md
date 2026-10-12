@@ -41,97 +41,57 @@ Tool call logs record only the argument **keys** and count, never the argument v
 
 ## Runtime self-inspection
 
-The `self` tool is disabled by default. When enabled, it exposes a filtered view
-of the current agent and request, including the workspace path, the web and
-exec settings, and the full PicoClaw configuration with credentials removed
-(`config`), and keeps a temporary scratchpad per session (cleared by
-`/clear`). Writes are disabled by default; enabling `allow_set` permits
-scratchpad writes and session-scoped changes that apply only to the session that
-makes them: `max_iterations` (1–100, effective immediately),
-`context_window_tokens` (4096–1,000,000, effective immediately), and
-`model_preset` (a configured model, effective from the next turn). Session
-changes are lost on restart.
+The `self` tool is disabled by default. Enable it to expose a compact JSON
+snapshot with `model`, `model_presets`, `max_iterations`,
+`context_window_tokens`, `tool_names`, `turn` and `context_usage`.
 
-The read-only `turn` field describes the current turn's phase, iteration,
-iteration limit, remaining iterations, elapsed milliseconds and subturn depth.
-`remaining_iterations` counts future LLM iterations, excluding the current one;
-multiple tool calls in one iteration do not each consume an iteration.
-It reflects session changes to `max_iterations` immediately and never becomes
-negative. It contains no prompt, user message or tool arguments, and is `null`
-outside an active turn.
+It has two actions:
 
-The read-only `context_usage` field describes the **last LLM input**, including
-tool definitions. `used_tokens` comes from the provider's prompt-token count
-when available (`source: "provider"`), otherwise from PicoClaw's local token
-estimator (`source: "local_estimate"`). It includes `total_tokens` (the current
-session context window), `output_reserve_tokens` (the request's `max_tokens`),
-`available_tokens` after subtracting input and output reserve, and `used_percent`
-relative to that input budget (0–100). Available tokens never become negative.
-This is not a prediction of the next request: the latest model reply and tool
-results produced since that input are excluded. It is `null` before the first
-LLM response, outside a turn, or when the context window is unknown.
+- `check`: return the complete snapshot. It accepts no `key` or `value`.
+- `set`: change one session setting using `key` and `value`. It requires
+  `allow_set`, an active agent turn and a session key. Supported keys are
+  `max_iterations` (integer 1–100), `context_window_tokens` (integer
+  4096–1,000,000), and `model_preset` (a name from `model_presets`).
+  Use `value: null` to restore the selected setting's configured default.
 
-For example, `{"action":"check","key":"turn"}` inspects progress and
-`{"action":"check","key":"context_usage.available_tokens"}` reads the last
-input's remaining budget. `check` on an object or array returns its complete
-JSON value; use `list` to discover its children without retrieving their values.
-
-The tool exposes these actions:
-
-- `check` (read-only): show the runtime snapshot and scratchpad, or inspect one
-  dot path such as `web_config.enabled`.
-- `list` (read-only): enumerate the children of a snapshot node with their access
-  level and numeric range; omit the key to list the snapshot root.
-- `schema` (read-only): print every access rule (path, level, range) the tool
-  enforces, so the agent can learn what it may read and write.
-- `explain` (read-only): describe one path, its access level, whether it is
-  writable, and its current value when readable.
-- `diff` (read-only): compare the session overrides with the configured agent
-  defaults.
-- `history` (read-only): list the recent session writes, newest last.
-- `logs` (read-only): tail PicoClaw's own log files (the gateway log and its
-  rotated archives, or the file selected by `PICOCLAW_LOG_FILE`). The optional
-  key filters by level name (`debug`, `info`, `warn`, `error`, `fatal`) or by
-  substring; credential-like values are redacted and only the last 200 matching
-  lines are returned. It reports an error when file logging is off.
-- `set` (requires `allow_set`): change `max_iterations`, `context_window_tokens`,
-  `model_preset`, or store a scratchpad note.
-- `reset` (requires `allow_set`): drop one session override so the configured
-  value applies again.
-- `undo` (requires `allow_set`): revert the most recent session write. The last
-  20 writes per session are kept in memory and cleared by `/clear`.
-
+Iteration and context limits apply immediately. Model changes, including resets,
+start next turn. Changes affect only the current session, are cleared by `/clear`,
+and are lost on restart.
 
 ```json
-{
-  "tools": {
-    "self": {
-      "enabled": true,
-      "allow_set": false
-    }
-  }
-}
+{"tools":{"self":{"enabled":true,"allow_set":false}}}
 ```
 
 Environment variables: `PICOCLAW_TOOLS_SELF_ENABLED` and `PICOCLAW_TOOLS_SELF_ALLOW_SET`.
 
-The tool enforces a single access table over every path. `BLOCKED` sections
-(credentials and execution infrastructure such as `plugins`, `hooks`,
-`evolution`, `isolation`, `gateway`, `tools.mcp.servers`, dispatch and session
-routing) are omitted from reads and rejected on writes. Config is fail-closed at
-the section level: only allowlisted sections (`agents`, `session`,
-`channel_list`, `model_list`, `tools`, `events`, `voice`, `power`, `devices`,
-`heartbeat`, `version`, `build_info`) are readable, so a new configuration
-section is blocked until it is reviewed and added. `READ_ONLY` sections are
-readable but not writable. `RESTRICTED` keys are writable only for the current
-session and only inside their range: `max_iterations` (1–100) and
-`context_window_tokens` (4096–1,000,000). `config` returns those sections as
-JSON-safe read-only data: `SecureString` fields are dropped and secret-like keys
-(for example `api_key`, `token`, `secret`, `password`, `Authorization` headers)
-are shown as `[REDACTED]`. A direct `model` write is rejected; use
-`model_preset` instead. `max_iterations` and `context_window_tokens` need a
-session key, so turns without one cannot change them. Runtime options that
-PicoClaw does not currently implement are not exposed as writable fields.
+Example tool calls (writes require `allow_set: true`):
+
+```json
+{"action":"check"}
+{"action":"set","key":"max_iterations","value":30}
+{"action":"set","key":"model_preset","value":"my-configured-preset"}
+{"action":"set","key":"max_iterations","value":null}
+```
+
+`turn` describes the active phase, iteration, iteration limit, remaining
+iterations, elapsed milliseconds and subturn depth. Remaining iterations count
+future LLM iterations, excluding the current one, and never become negative.
+Multiple tool calls in one iteration do not each consume an iteration.
+It is `null` outside an active turn.
+
+`context_usage` describes the **last LLM input**, including tool definitions.
+It contains `used_tokens`, `total_tokens` (the current session context window),
+`output_reserve_tokens`, `available_tokens`, `used_percent` (0–100), and `source`.
+The source is `provider` when a prompt-token count is available, otherwise
+`local_estimate`. Available tokens subtract the input and output reserve and
+never become negative. The latest reply and subsequent tool results are excluded;
+this is not a prediction of the next request. It is `null` before the first LLM
+response, outside a turn, or when the context window is unknown.
+
+The snapshot includes no configuration dump, credentials, logs, request contents
+or scratchpad. Dot-path reads and the former `list`, `schema`, `explain`, `diff`,
+`history`, `logs`, `reset` and `undo` actions are no longer supported. Replace
+`reset` with `set` using `value: null`.
 
 ## Protected local files
 
