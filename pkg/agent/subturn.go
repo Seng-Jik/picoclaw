@@ -296,17 +296,28 @@ func spawnSubTurn(
 	// Acquire a slot FIRST so it is released even if early validation fails.
 	// Enforces maxConcurrent across the whole AgentLoop, including nested turns, and waits
 	// up to concurrencyTimeout for a free slot. Also respects context cancellation.
-	if err = acquireSubTurnSlot(ctx, al.subTurnSem, rtCfg); err != nil {
-		return nil, err
+	// A synchronous child borrows its parent's slot instead: the parent is blocked waiting
+	// for it, so the pair occupies one slot. Otherwise nested sync spawns would wait on a
+	// slot held by their own parent. Only one child can borrow at a time.
+	borrowedSlot := !cfg.Async && parentTS.slotLendable.CompareAndSwap(true, false)
+	if !borrowedSlot {
+		if err = acquireSubTurnSlot(ctx, al.subTurnSem, rtCfg); err != nil {
+			return nil, err
+		}
 	}
-	globalSlotHeld := true
-	releaseGlobalSlot := func() {
-		if globalSlotHeld {
-			globalSlotHeld = false
+	slotHeld := true
+	releaseSlot := func() {
+		if !slotHeld {
+			return
+		}
+		slotHeld = false
+		if borrowedSlot {
+			parentTS.slotLendable.Store(true)
+		} else {
 			<-al.subTurnSem
 		}
 	}
-	defer releaseGlobalSlot()
+	defer releaseSlot()
 
 	// 1. Depth limit check
 	if parentTS.depth >= rtCfg.maxDepth {
@@ -414,6 +425,7 @@ func spawnSubTurn(
 	childTS.parentTurnState = parentTS
 	childTS.pendingResults = make(chan *tools.ToolResult, 16)
 	childTS.al = al                  // back-ref for hard abort cascade
+	childTS.slotLendable.Store(true) // runs on a slot (own or borrowed) that a sync child may borrow
 	childTS.session = ephemeralStore // same store as agent.Sessions
 
 	// Token budget initialization/inheritance
@@ -496,7 +508,7 @@ func spawnSubTurn(
 	// - Cleanup blocks on a full pendingResults channel
 	// - The parent goroutine is blocked waiting for a slot
 	// - The parent cannot consume pendingResults because it is blocked on the slot
-	releaseGlobalSlot()
+	releaseSlot()
 
 	// Convert turnResult to tools.ToolResult
 	if turnErr != nil {

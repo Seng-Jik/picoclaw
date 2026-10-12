@@ -2409,3 +2409,110 @@ func TestSpawnSubTurn_ReleasesGlobalSlot(t *testing.T) {
 		})
 	}
 }
+
+// nestingTool spawns a synchronous sub-turn from inside a running sub-turn.
+type nestingTool struct{}
+
+func (nestingTool) Name() string               { return "nest" }
+func (nestingTool) Description() string        { return "spawn a nested sub-turn" }
+func (nestingTool) Parameters() map[string]any { return map[string]any{"type": "object"} }
+func (nestingTool) Execute(ctx context.Context, _ map[string]any) *tools.ToolResult {
+	res, err := SpawnSubTurn(ctx, SubTurnConfig{Model: "test-model", SystemPrompt: "grandchild-task"})
+	if err != nil {
+		return tools.ErrorResult(err.Error())
+	}
+	return tools.NewToolResult(res.ForLLM)
+}
+
+// nestingProvider makes the "child-task" turn call the nest tool and the "grandchild-task" turn answer "leaf".
+type nestingProvider struct {
+	mu         sync.Mutex
+	toolResult string
+}
+
+func (p *nestingProvider) GetDefaultModel() string { return "test-model" }
+
+func (p *nestingProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	defs []providers.ToolDefinition,
+	model string,
+	options map[string]any,
+) (*providers.LLMResponse, error) {
+	var toolResult string
+	for _, m := range messages {
+		if strings.Contains(m.Content, "grandchild-task") {
+			return &providers.LLMResponse{Content: "leaf"}, nil
+		}
+		if m.Role == "tool" {
+			toolResult = m.Content
+		}
+	}
+	if toolResult != "" {
+		p.mu.Lock()
+		p.toolResult = toolResult
+		p.mu.Unlock()
+		return &providers.LLMResponse{Content: "done"}, nil
+	}
+	return &providers.LLMResponse{ToolCalls: []providers.ToolCall{{ID: "nest-1", Name: "nest", Arguments: map[string]any{}}}}, nil
+}
+
+// TestSpawnSubTurn_SyncChildDoesNotStarveOnParentSlot verifies that a sub-turn blocked on a synchronous
+// child does not keep its slot from that child: with max_concurrent=1 the nested spawn must still run.
+func TestSpawnSubTurn_SyncChildDoesNotStarveOnParentSlot(t *testing.T) {
+	provider := &nestingProvider{}
+	al := newLimitTestLoop(t, provider, 1)
+	agent := al.registry.GetDefaultAgent()
+	agent.Tools.Register(nestingTool{})
+	agent.Provider = provider
+	parent := newRootTurnState("root-nest")
+	parent.agent = agent
+
+	start := time.Now()
+	res, err := spawnSubTurn(context.Background(), al, parent, SubTurnConfig{Model: "test-model", SystemPrompt: "child-task"})
+	if err != nil {
+		t.Fatalf("spawn failed: %v", err)
+	}
+	if res.ForLLM != "done" {
+		t.Fatalf("unexpected child result %q", res.ForLLM)
+	}
+
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if provider.toolResult != "leaf" {
+		t.Fatalf("nested spawn did not run, tool result: %q (after %v)", provider.toolResult, time.Since(start))
+	}
+}
+
+// TestSpawnSubTurn_ParentSlotLentToOneChildAtATime verifies that only one concurrent sync child borrows
+// the parent's slot, and that the slot is lendable again once that child ends.
+func TestSpawnSubTurn_ParentSlotLentToOneChildAtATime(t *testing.T) {
+	provider := newGatedProvider()
+	al := newLimitTestLoop(t, provider, 1)
+	al.subTurnSem <- struct{}{} // the slot held by the parent sub-turn
+	parent := newRootTurnState("sub-parent")
+	parent.slotLendable.Store(true)
+	cfg := SubTurnConfig{Model: "gpt-4o-mini"}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := spawnSubTurn(context.Background(), al, parent, cfg)
+		done <- err
+	}()
+	<-provider.started // first child runs on the borrowed slot
+
+	if _, err := spawnSubTurn(context.Background(), al, parent, cfg); !errors.Is(err, ErrConcurrencyTimeout) {
+		t.Fatalf("expected second concurrent child to wait for a slot and time out, got %v", err)
+	}
+
+	close(provider.release)
+	if err := <-done; err != nil {
+		t.Fatalf("first child failed: %v", err)
+	}
+	if !parent.slotLendable.Load() {
+		t.Fatal("parent slot was not returned after the borrowing child ended")
+	}
+	if got := len(al.subTurnSem); got != 1 {
+		t.Fatalf("expected only the parent's slot to be held, got %d", got)
+	}
+}

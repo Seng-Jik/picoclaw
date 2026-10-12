@@ -237,6 +237,7 @@ type turnState struct {
 	childTurnIDs         []string               // Child turn IDs
 	pendingResults       chan *tools.ToolResult // Channel for SubTurn results
 	isFinished           atomic.Bool            // Whether this turn has finished
+	slotLendable         atomic.Bool            // SubTurn runs on an AgentLoop slot that a sync child may borrow
 	session              session.SessionStore   // Session store reference
 	initialHistoryLength int                    // Snapshot of history length at turn start
 
