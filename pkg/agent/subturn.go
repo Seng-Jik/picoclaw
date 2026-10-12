@@ -30,7 +30,6 @@ const (
 var (
 	ErrDepthLimitExceeded   = errors.New("sub-turn depth limit exceeded")
 	ErrInvalidSubTurnConfig = errors.New("invalid sub-turn config")
-	ErrConcurrencyLimit     = errors.New("maximum concurrent sub-turns reached")
 	ErrConcurrencyTimeout   = errors.New("timeout waiting for concurrency slot")
 )
 
@@ -267,6 +266,24 @@ func SpawnSubTurn(ctx context.Context, cfg SubTurnConfig) (*tools.ToolResult, er
 	return spawnSubTurn(ctx, al, parentTS, cfg)
 }
 
+// acquireSubTurnSlot blocks until sem has a free slot, ctx is done, or concurrencyTimeout elapses.
+func acquireSubTurnSlot(ctx context.Context, sem chan struct{}, rtCfg subTurnRuntimeConfig) error {
+	timeoutCtx, cancel := context.WithTimeout(ctx, rtCfg.concurrencyTimeout)
+	defer cancel()
+
+	select {
+	case sem <- struct{}{}:
+		return nil
+	case <-timeoutCtx.Done():
+		// If the parent context was canceled, propagate that error instead of the timeout.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("%w: all %d slots occupied for %v",
+			ErrConcurrencyTimeout, rtCfg.maxConcurrent, rtCfg.concurrencyTimeout)
+	}
+}
+
 func spawnSubTurn(
 	ctx context.Context,
 	al *AgentLoop,
@@ -277,21 +294,18 @@ func spawnSubTurn(
 	rtCfg := al.getSubTurnConfig()
 
 	// Enforce maxConcurrent across the whole AgentLoop, including nested turns.
-	for {
-		active := al.activeSubTurns.Load()
-		if active >= int64(rtCfg.maxConcurrent) {
-			return nil, fmt.Errorf("%w: limit is %d", ErrConcurrencyLimit, rtCfg.maxConcurrent)
-		}
-		if al.activeSubTurns.CompareAndSwap(active, active+1) {
-			break
+	// Waits up to concurrencyTimeout for a free slot instead of failing fast.
+	if err = acquireSubTurnSlot(ctx, al.subTurnSem, rtCfg); err != nil {
+		return nil, err
+	}
+	globalSlotHeld := true
+	releaseGlobalSlot := func() {
+		if globalSlotHeld {
+			globalSlotHeld = false
+			<-al.subTurnSem
 		}
 	}
-	globalSemAcquired := true
-	defer func() {
-		if globalSemAcquired {
-			al.activeSubTurns.Add(-1)
-		}
-	}()
+	defer releaseGlobalSlot()
 
 	// 0. Acquire concurrency semaphore FIRST to ensure it's released even if early validation fails.
 	// Blocks if parent already has maxConcurrentSubTurns running, with a timeout to prevent indefinite blocking.
@@ -519,8 +533,7 @@ func spawnSubTurn(
 		<-parentTS.concurrencySem
 		semAcquired = false // prevent the defer from double-releasing
 	}
-	al.activeSubTurns.Add(-1)
-	globalSemAcquired = false
+	releaseGlobalSlot()
 
 	// Convert turnResult to tools.ToolResult
 	if turnErr != nil {

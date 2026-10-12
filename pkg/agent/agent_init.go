@@ -84,6 +84,7 @@ func NewAgentLoop(
 			opt(al)
 		}
 	}
+	al.subTurnSem = make(chan struct{}, al.getSubTurnConfig().maxConcurrent)
 	if al.runtimeEvents == nil {
 		al.runtimeEvents = runtimeevents.NewBus()
 		al.ownsRuntimeEvents = true

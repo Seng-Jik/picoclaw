@@ -2367,7 +2367,7 @@ func newLimitTestLoop(t *testing.T, provider providers.LLMProvider, maxConcurren
 				ModelName:         "test-model",
 				MaxTokens:         4096,
 				MaxToolIterations: 10,
-				SubTurn:           config.SubTurnConfig{MaxConcurrent: maxConcurrent},
+				SubTurn:           config.SubTurnConfig{MaxConcurrent: maxConcurrent, ConcurrencyTimeoutSec: 1},
 			},
 		},
 	}
@@ -2408,8 +2408,8 @@ func TestSpawnSubTurn_GlobalLimitAcrossRootSpawns(t *testing.T) {
 		}
 	}
 
-	if _, err := spawnSubTurn(context.Background(), al, parent, cfg); !errors.Is(err, ErrConcurrencyLimit) {
-		t.Fatalf("expected ErrConcurrencyLimit with %d running sub-turns, got %v", limit, err)
+	if _, err := spawnSubTurn(context.Background(), al, parent, cfg); !errors.Is(err, ErrConcurrencyTimeout) {
+		t.Fatalf("expected ErrConcurrencyTimeout with %d running sub-turns, got %v", limit, err)
 	}
 
 	close(provider.release)
@@ -2420,7 +2420,42 @@ func TestSpawnSubTurn_GlobalLimitAcrossRootSpawns(t *testing.T) {
 	}
 }
 
-// TestSpawnSubTurn_ReleasesGlobalSlot verifies the global counter returns to zero on every exit path.
+// TestSpawnSubTurn_WaitsForFreeSlot verifies that a spawn over the limit queues until a slot frees up.
+func TestSpawnSubTurn_WaitsForFreeSlot(t *testing.T) {
+	provider := newGatedProvider()
+	al := newLimitTestLoop(t, provider, 1)
+	parent := newRootTurnState("root-wait")
+	cfg := SubTurnConfig{Model: "gpt-4o-mini"}
+
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			_, err := spawnSubTurn(context.Background(), al, parent, cfg)
+			errs <- err
+		}()
+	}
+
+	<-provider.started
+	select {
+	case <-provider.started:
+		t.Fatal("second sub-turn started while the only slot was still taken")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(provider.release)
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-errs:
+			if err != nil {
+				t.Fatalf("expected queued spawn to succeed once a slot freed up, got %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for queued sub-turn")
+		}
+	}
+}
+
+// TestSpawnSubTurn_ReleasesGlobalSlot verifies the global slot is released on every exit path.
 func TestSpawnSubTurn_ReleasesGlobalSlot(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -2438,8 +2473,8 @@ func TestSpawnSubTurn_ReleasesGlobalSlot(t *testing.T) {
 
 			_, _ = spawnSubTurn(context.Background(), al, parent, tc.cfg)
 
-			if got := al.activeSubTurns.Load(); got != 0 {
-				t.Fatalf("expected 0 active sub-turns after %s, got %d", tc.name, got)
+			if got := len(al.subTurnSem); got != 0 {
+				t.Fatalf("expected 0 slots held after %s, got %d", tc.name, got)
 			}
 		})
 	}

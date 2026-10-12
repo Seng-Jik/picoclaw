@@ -73,7 +73,10 @@ type AgentLoop struct {
 	// activeTurnStates tracks active turns per session to prevent duplicates.
 	activeTurnStates sync.Map
 	subTurnCounter   atomic.Int64
-	activeSubTurns   atomic.Int64
+
+	// subTurnSem caps concurrently running sub-turns across the whole AgentLoop
+	// (agents.defaults.subturn.max_concurrent), regardless of nesting or session.
+	subTurnSem chan struct{}
 
 	turnSeq atomic.Uint64
 
