@@ -650,7 +650,8 @@ func (cs *CronService) EnableJob(jobID string, enabled bool) *CronJob {
 
 			cs.notify()
 
-			return job
+			updated := cloneCronJob(*job)
+			return &updated
 		}
 	}
 
@@ -661,18 +662,14 @@ func (cs *CronService) ListJobs(includeDisabled bool) []CronJob {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
 
-	if includeDisabled {
-		return cs.store.Jobs
-	}
-
-	var enabled []CronJob
+	jobs := make([]CronJob, 0, len(cs.store.Jobs))
 	for _, job := range cs.store.Jobs {
-		if job.Enabled {
-			enabled = append(enabled, job)
+		if !includeDisabled && !job.Enabled {
+			continue
 		}
+		jobs = append(jobs, cloneCronJob(job))
 	}
-
-	return enabled
+	return jobs
 }
 
 func (cs *CronService) Status() map[string]any {

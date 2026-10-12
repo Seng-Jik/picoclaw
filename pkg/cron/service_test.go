@@ -537,6 +537,63 @@ func TestCronService_StartupFinalizesExpiredOneTimeJobs(t *testing.T) {
 	}
 }
 
+func TestCronService_ListJobsReturnsCopies(t *testing.T) {
+	cs, path := setupService(nil)
+	defer os.Remove(path)
+
+	every := int64(60_000)
+	cs.AddJob("a", CronSchedule{Kind: "every", EveryMS: &every}, "m", "cli", "d")
+	cs.AddJob("b", CronSchedule{Kind: "every", EveryMS: &every}, "m", "cli", "d")
+
+	jobs := cs.ListJobs(true)
+	if len(jobs) != 2 {
+		t.Fatalf("want 2 jobs, got %d", len(jobs))
+	}
+	jobs[0].Name = "mutated"
+	if jobs[0].State.NextRunAtMS != nil {
+		*jobs[0].State.NextRunAtMS = 1
+	}
+	if jobs[0].Schedule.EveryMS != nil {
+		*jobs[0].Schedule.EveryMS = 1
+	}
+
+	again := cs.ListJobs(true)
+	if again[0].Name == "mutated" {
+		t.Fatal("ListJobs aliases the internal store (name mutation leaked)")
+	}
+	if again[0].State.NextRunAtMS != nil && *again[0].State.NextRunAtMS == 1 {
+		t.Fatal("ListJobs aliases state pointers")
+	}
+	if again[0].Schedule.EveryMS != nil && *again[0].Schedule.EveryMS == 1 {
+		t.Fatal("ListJobs aliases schedule pointers")
+	}
+}
+
+func TestCronService_EnableJobReturnsCopy(t *testing.T) {
+	cs, path := setupService(nil)
+	defer os.Remove(path)
+
+	every := int64(60_000)
+	j, err := cs.AddJob("orig", CronSchedule{Kind: "every", EveryMS: &every}, "m", "cli", "d")
+	if err != nil {
+		t.Fatalf("AddJob failed: %v", err)
+	}
+
+	ret := cs.EnableJob(j.ID, true)
+	if ret == nil {
+		t.Fatal("EnableJob returned nil")
+	}
+	ret.Name = "HACKED"
+
+	got, ok := cs.GetJob(j.ID)
+	if !ok {
+		t.Fatal("job not found")
+	}
+	if got.Name == "HACKED" {
+		t.Fatal("EnableJob returns a live internal pointer (mutation leaked into store)")
+	}
+}
+
 func TestCronService_ConcurrentAccess(t *testing.T) {
 	cs, path := setupService(nil)
 	defer os.Remove(path)
