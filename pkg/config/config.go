@@ -698,9 +698,8 @@ type FeishuSettings struct {
 }
 
 type DiscordSettings struct {
-	Token       SecureString `json:"token,omitzero" yaml:"token,omitempty" env:"PICOCLAW_CHANNELS_DISCORD_TOKEN"`
-	Proxy       string       `json:"proxy"          yaml:"-"               env:"PICOCLAW_CHANNELS_DISCORD_PROXY"`
-	MentionOnly bool         `json:"mention_only"   yaml:"-"               env:"PICOCLAW_CHANNELS_DISCORD_MENTION_ONLY"`
+	Token SecureString `json:"token,omitzero" yaml:"token,omitempty" env:"PICOCLAW_CHANNELS_DISCORD_TOKEN"`
+	Proxy string       `json:"proxy"          yaml:"-"               env:"PICOCLAW_CHANNELS_DISCORD_PROXY"`
 }
 
 type MaixCamSettings struct {
@@ -757,10 +756,9 @@ type LINESettings struct {
 }
 
 type OneBotSettings struct {
-	WSUrl              string       `json:"ws_url"                yaml:"-"                      env:"PICOCLAW_CHANNELS_ONEBOT_WS_URL"`
-	AccessToken        SecureString `json:"access_token,omitzero" yaml:"access_token,omitempty" env:"PICOCLAW_CHANNELS_ONEBOT_ACCESS_TOKEN"`
-	ReconnectInterval  int          `json:"reconnect_interval"    yaml:"-"                      env:"PICOCLAW_CHANNELS_ONEBOT_RECONNECT_INTERVAL"`
-	GroupTriggerPrefix []string     `json:"group_trigger_prefix"  yaml:"-"                      env:"PICOCLAW_CHANNELS_ONEBOT_GROUP_TRIGGER_PREFIX"`
+	WSUrl             string       `json:"ws_url"                yaml:"-"                      env:"PICOCLAW_CHANNELS_ONEBOT_WS_URL"`
+	AccessToken       SecureString `json:"access_token,omitzero" yaml:"access_token,omitempty" env:"PICOCLAW_CHANNELS_ONEBOT_ACCESS_TOKEN"`
+	ReconnectInterval int          `json:"reconnect_interval"    yaml:"-"                      env:"PICOCLAW_CHANNELS_ONEBOT_RECONNECT_INTERVAL"`
 }
 
 type WeComGroupConfig struct {
@@ -799,7 +797,6 @@ type PicoSettings struct {
 	Streaming       StreamingConfig `json:"streaming,omitzero"          yaml:"-"`
 	PingInterval    int             `json:"ping_interval,omitempty"     yaml:"-"`
 	ReadTimeout     int             `json:"read_timeout,omitempty"      yaml:"-"`
-	WriteTimeout    int             `json:"write_timeout,omitempty"     yaml:"-"`
 	MaxConnections  int             `json:"max_connections,omitempty"   yaml:"-"`
 }
 

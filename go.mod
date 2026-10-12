@@ -27,7 +27,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/h2non/filetype v1.1.3
 	github.com/kagisearch/kagi-openapi-golang v0.0.0-20260526215348-96575e864d62
-	github.com/larksuite/oapi-sdk-go/v3 v3.9.4
+	github.com/larksuite/oapi-sdk-go/v3 v3.12.0
 	github.com/line/line-bot-sdk-go/v8 v8.23.0
 	github.com/mdp/qrterminal/v3 v3.2.1
 	github.com/minio/selfupdate v0.6.0
@@ -36,7 +36,7 @@ require (
 	github.com/mymmrac/telego v1.12.1
 	github.com/open-dingtalk/dingtalk-stream-sdk-go v0.9.1
 	github.com/openai/openai-go/v3 v3.70.0
-	github.com/pion/rtp v1.10.2
+	github.com/pion/rtp v1.10.5
 	github.com/pion/webrtc/v3 v3.3.6
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/rs/zerolog v1.35.1
@@ -50,7 +50,7 @@ require (
 	golang.org/x/crypto v0.57.0
 	golang.org/x/net v0.60.0
 	golang.org/x/oauth2 v0.36.0
-	golang.org/x/sync v0.23.0
+	golang.org/x/sync v0.24.0
 	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0
 	golang.org/x/time v0.16.0
