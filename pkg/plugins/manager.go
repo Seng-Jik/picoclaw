@@ -253,6 +253,7 @@ func (p *packagePlugin) Initialize(pc PluginContext) error {
 		}
 		skillEntries = kept
 	}
+	hasResources := len(skillEntries) > 0 || componentExists(pc.Root, "references")
 	hooks, diagnostics := discoverHooks(p.manifest, pc)
 	for _, d := range diagnostics {
 		p.host.diagnostic(d)
@@ -265,7 +266,7 @@ func (p *packagePlugin) Initialize(pc PluginContext) error {
 			processHooks = append(processHooks, hook)
 		}
 	}
-	publish(Capabilities{Skills: skillEntries, Hooks: processHooks})
+	publish(Capabilities{Skills: skillEntries, Hooks: processHooks, HasResources: hasResources})
 	servers := map[string]ServerSpec{}
 	if componentExists(pc.Root, "mcp.json") {
 		data, err := ReadPackageFile(pc.Root, "mcp.json")

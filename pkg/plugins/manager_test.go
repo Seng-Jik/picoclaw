@@ -156,3 +156,43 @@ func TestUnavailableDataPreservesSkills(t *testing.T) {
 		t.Fatalf("count=%d status=%+v", count, m.Statuses())
 	}
 }
+
+func TestResourcesAdvertisedWithoutSkills(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "plugin.json", manifestJSON(nil))
+	writeTestFile(t, root, "references/help.md", []byte("help"))
+	var hasResources bool
+	m := NewManager(testConfig(root, t.TempDir()), root, func(_ context.Context, c Capabilities) []Diagnostic {
+		hasResources = hasResources || c.HasResources
+		return nil
+	})
+	defer m.Close()
+	if err := m.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !hasResources {
+		t.Fatal("references-only plugin did not advertise resources")
+	}
+}
+
+func TestDisabledSkillsHideResources(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "plugin.json", manifestJSON(nil))
+	writeTestFile(t, root, "skills/greet/SKILL.md", []byte("---\nname: greet\ndescription: Hello\n---\nHi."))
+	cfg := testConfig(root, t.TempDir())
+	entry := cfg.Entries["demo"]
+	entry.SkillNames = []string{}
+	cfg.Entries["demo"] = entry
+	var hasResources bool
+	m := NewManager(cfg, root, func(_ context.Context, c Capabilities) []Diagnostic {
+		hasResources = hasResources || c.HasResources
+		return nil
+	})
+	defer m.Close()
+	if err := m.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if hasResources {
+		t.Fatal("disabled skills still advertised resources")
+	}
+}
