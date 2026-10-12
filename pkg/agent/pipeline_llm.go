@@ -541,6 +541,9 @@ func (p *Pipeline) CallLLM(
 	// both the finish reason and the per-turn token usage. ts is also exactly
 	// what the streaming publisher reads via GetLastUsage at finalize.
 	if ts != nil {
+		if p.Cfg.Tools.IsToolEnabled("self") {
+			ts.recordSelfContextUsage(exec.callMessages, exec.providerToolDefs, exec.response.Usage, exec.llmOpts)
+		}
 		ts.SetLastFinishReason(exec.response.FinishReason)
 		if exec.response.Usage != nil {
 			ts.SetLastUsage(exec.response.Usage)

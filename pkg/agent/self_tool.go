@@ -94,11 +94,15 @@ func (t *SelfTool) Description() string {
 		"- check (key): inspect a value; dot paths are supported (for example, " +
 		"web_config.enabled or request.channel). Available fields include " +
 		"max_iterations, context_window_tokens, model, model_preset, model_presets, " +
-		"session_overrides, defaults, workspace, tool_names, config, web_config, " +
+		"session_overrides, defaults, turn, context_usage, workspace, tool_names, config, web_config, " +
 		"exec_config, and request.channel/chat_id/sender_id.\n" +
 		"config holds the full PicoClaw configuration with credentials removed " +
 		"(secure fields are dropped, secret-like keys are shown as [REDACTED], and " +
 		"infrastructure/execution sections are omitted).\n" +
+		"turn shows the active phase, iteration, remaining iterations, elapsed time and depth. " +
+		"context_usage shows the last LLM input budget, output reserve and available tokens; " +
+		"source is provider or local_estimate. It excludes the latest reply and subsequent tool results. " +
+		"Both are read-only and null without an active turn; context_usage is also null before the first LLM response.\n" +
 		"- list (key): enumerate the children of a snapshot node with their access " +
 		"level and numeric range; omit key to list the snapshot root.\n" +
 		"- schema: print every access rule (path, level, range) this tool enforces.\n" +
@@ -120,7 +124,7 @@ func (t *SelfTool) Description() string {
 		"- undo: revert the most recent session write.\n" +
 		"Direct model changes are disabled. The runtime snapshot " +
 		"fields workspace, config, web_config, exec_config, model_presets, tool_names, " +
-		"defaults, session_overrides, and request are read-only.\n" +
+		"defaults, session_overrides, turn, context_usage, and request are read-only.\n" +
 		"Use check for model/settings questions or to diagnose tool behavior; check " +
 		"context_window_tokens and max_iterations before a large task. Use model_preset " +
 		"when asked to switch to a configured model, and scratchpad notes for " +

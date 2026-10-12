@@ -254,6 +254,7 @@ type turnState struct {
 	tokenBudget      *atomic.Int64        // Shared token budget counter
 	lastFinishReason string               // Last LLM finish_reason
 	lastUsage        *providers.UsageInfo // Last LLM usage info
+	selfContextUsage *selfContextUsage    // Last LLM input budget, without message contents
 
 	// Back-reference to the owning AgentLoop (set for SubTurns only, used for hard abort cascade)
 	al *AgentLoop

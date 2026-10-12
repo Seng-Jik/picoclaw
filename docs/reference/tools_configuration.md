@@ -50,6 +50,30 @@ makes them: `max_iterations` (1–100, effective immediately),
 `model_preset` (a configured model, effective from the next turn). Session
 changes are lost on restart.
 
+The read-only `turn` field describes the current turn's phase, iteration,
+iteration limit, remaining iterations, elapsed milliseconds and subturn depth.
+`remaining_iterations` counts future LLM iterations, excluding the current one;
+multiple tool calls in one iteration do not each consume an iteration.
+It reflects session changes to `max_iterations` immediately and never becomes
+negative. It contains no prompt, user message or tool arguments, and is `null`
+outside an active turn.
+
+The read-only `context_usage` field describes the **last LLM input**, including
+tool definitions. `used_tokens` comes from the provider's prompt-token count
+when available (`source: "provider"`), otherwise from PicoClaw's local token
+estimator (`source: "local_estimate"`). It includes `total_tokens` (the current
+session context window), `output_reserve_tokens` (the request's `max_tokens`),
+`available_tokens` after subtracting input and output reserve, and `used_percent`
+relative to that input budget (0–100). Available tokens never become negative.
+This is not a prediction of the next request: the latest model reply and tool
+results produced since that input are excluded. It is `null` before the first
+LLM response, outside a turn, or when the context window is unknown.
+
+For example, `{"action":"check","key":"turn"}` inspects progress and
+`{"action":"check","key":"context_usage.available_tokens"}` reads the last
+input's remaining budget. `check` on an object or array returns its complete
+JSON value; use `list` to discover its children without retrieving their values.
+
 The tool exposes these actions:
 
 - `check` (read-only): show the runtime snapshot and scratchpad, or inspect one

@@ -176,6 +176,10 @@ func selfFieldDescription(key string) string {
 		return "Tools available to this agent; read-only."
 	case "request":
 		return "Request metadata (channel, chat_id, sender_id); read-only."
+	case "turn":
+		return "Active turn phase, iteration budget, elapsed milliseconds and depth; null outside a turn; read-only."
+	case "context_usage":
+		return "Last LLM input budget, excluding its reply and subsequent tool results; source is provider or local_estimate; read-only."
 	case "web_config":
 		return "Web tool settings (enabled, provider, format); read-only."
 	case "exec_config":

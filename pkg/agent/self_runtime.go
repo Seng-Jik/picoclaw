@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"sort"
 	"strings"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -80,6 +81,8 @@ func (c *agentRuntimeControl) Snapshot(ctx context.Context) map[string]any {
 		"workspace":             agent.Workspace,
 		"tool_names":            agent.Tools.List(),
 		"request":               requestSelfSnapshot(ctx),
+		"turn":                  nil,
+		"context_usage":         nil,
 		"defaults": map[string]any{
 			"max_iterations":        defaultMaxIterations,
 			"context_window_tokens": defaultContextWindow,
@@ -90,6 +93,18 @@ func (c *agentRuntimeControl) Snapshot(ctx context.Context) map[string]any {
 			maxIterations, contextWindow, effectiveModel,
 		),
 	}
+	if ts := turnStateFromContext(ctx); ts != nil && ts.agent != nil {
+		info := ts.snapshot()
+		view["turn"] = map[string]any{
+			"phase":                string(info.Phase),
+			"iteration":            info.Iteration,
+			"max_iterations":       maxIterations,
+			"remaining_iterations": max(0, maxIterations-info.Iteration),
+			"elapsed_ms":           max(int64(0), time.Since(info.StartedAt).Milliseconds()),
+			"depth":                info.Depth,
+		}
+		view["context_usage"] = ts.selfContextSnapshot(contextWindow)
+	}
 	if c.cfg != nil {
 		view["web_config"] = selfWebSnapshot(c.cfg)
 		view["exec_config"] = selfExecSnapshot(c.cfg)
@@ -97,6 +112,60 @@ func (c *agentRuntimeControl) Snapshot(ctx context.Context) map[string]any {
 		view["config"] = redactedConfigSnapshot(c.cfg)
 	}
 	return view
+}
+
+type selfContextUsage struct {
+	usedTokens    int
+	outputReserve int
+	source        string
+}
+
+func (ts *turnState) recordSelfContextUsage(
+	messages []providers.Message,
+	defs []providers.ToolDefinition,
+	usage *providers.UsageInfo,
+	options map[string]any,
+) {
+	budget := &selfContextUsage{source: "local_estimate", outputReserve: ts.agent.MaxTokens}
+	if reserve, err := selfInt(options["max_tokens"]); err == nil {
+		budget.outputReserve = max(0, reserve)
+	}
+	if usage != nil && usage.PromptTokens > 0 {
+		budget.usedTokens, budget.source = usage.PromptTokens, "provider"
+	} else {
+		budget.usedTokens = EstimateToolDefsTokens(defs)
+		for _, message := range messages {
+			budget.usedTokens += EstimateMessageTokens(message)
+		}
+	}
+	ts.mu.Lock()
+	ts.selfContextUsage = budget
+	ts.mu.Unlock()
+}
+
+// The budget describes the last LLM input, before its reply and subsequent tool results.
+func (ts *turnState) selfContextSnapshot(window int) map[string]any {
+	ts.mu.RLock()
+	budget := ts.selfContextUsage
+	ts.mu.RUnlock()
+	if budget == nil || window <= 0 {
+		return nil
+	}
+	effectiveWindow := max(0, window-budget.outputReserve)
+	percent := 0
+	if effectiveWindow > 0 {
+		percent = min(100, budget.usedTokens*100/effectiveWindow)
+	} else if budget.usedTokens > 0 {
+		percent = 100
+	}
+	return map[string]any{
+		"used_tokens":           budget.usedTokens,
+		"total_tokens":          window,
+		"output_reserve_tokens": budget.outputReserve,
+		"available_tokens":      max(0, effectiveWindow-budget.usedTokens),
+		"used_percent":          percent,
+		"source":                budget.source,
+	}
 }
 
 // selfSessionOverrides reports which session-scoped values differ from the
@@ -372,36 +441,10 @@ func formatSelfValue(value any) string {
 		return "null"
 	case string:
 		return value
-	case map[string]any:
-		if len(value) == 0 {
-			return "{}"
-		}
+	case map[string]any, []any, []string:
 		encoded, _ := json.Marshal(value)
-		if len(value) <= 5 && len(encoded) <= 200 {
-			return string(encoded)
-		}
-		keys := make([]string, 0, len(value))
-		for key := range value {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		if len(keys) > 15 {
-			keys = keys[:15]
-		}
-		return "{" + strings.Join(keys, ", ") + ", ...}"
-	case []any:
-		return formatSelfSlice(value)
-	case []string:
-		return formatSelfSlice(value)
+		return string(encoded)
 	default:
 		return fmt.Sprint(value)
 	}
-}
-
-func formatSelfSlice[T any](value []T) string {
-	if len(value) > 20 {
-		return fmt.Sprintf("[%d items]", len(value))
-	}
-	encoded, _ := json.Marshal(value)
-	return string(encoded)
 }
