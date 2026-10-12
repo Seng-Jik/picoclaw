@@ -44,6 +44,7 @@ type Config struct {
 	Gateway   GatewayConfig   `json:"gateway"             yaml:"-"`
 	Events    EventsConfig    `json:"events,omitempty"    yaml:"-"`
 	Hooks     HooksConfig     `json:"hooks,omitempty"     yaml:"-"`
+	Plugins   PluginsConfig   `json:"plugins,omitempty"   yaml:"-"`
 	Tools     ToolsConfig     `json:"tools"               yaml:",inline"`
 	Heartbeat HeartbeatConfig `json:"heartbeat"           yaml:"-"`
 	Power     PowerConfig     `json:"power,omitzero"      yaml:"-"`
@@ -184,7 +185,7 @@ type IsolationConfig struct {
 }
 
 // ExposePath describes a host path that should remain visible inside the isolated
-// child-process environment. This is currently implemented on Linux only.
+// child-process environment. macOS Seatbelt supports same-path access, not remapping.
 type ExposePath struct {
 	Source string `json:"source"`
 	Target string `json:"target,omitempty"`
@@ -260,7 +261,7 @@ func (c *Config) MarshalJSON() ([]byte, error) {
 	}
 
 	if len(c.Session.Dimensions) > 0 || len(c.Session.IdentityLinks) > 0 ||
-		c.Session.DmScope != "" {
+		c.Session.DmScope != "" || !c.Session.Prune.IsZero() {
 		sessionCfg := c.Session
 		aux.Session = &sessionCfg
 	}
@@ -353,6 +354,103 @@ type SessionConfig struct {
 	Dimensions    []string            `json:"dimensions,omitempty"`
 	IdentityLinks map[string][]string `json:"identity_links,omitempty"`
 	DmScope       string              `json:"dm_scope,omitempty"`
+	Prune         SessionPruneConfig  `json:"prune"`
+}
+
+// MarshalJSON omits the prune block while it is unconfigured, so saving the
+// config does not litter it with an empty "prune" object (encoding/json's
+// omitempty never omits a struct value).
+func (s *SessionConfig) MarshalJSON() ([]byte, error) {
+	type alias SessionConfig
+	aux := struct {
+		alias
+		Prune *SessionPruneConfig `json:"prune,omitempty"`
+	}{alias: alias(*s)}
+	if !s.Prune.IsZero() {
+		prune := s.Prune
+		aux.Prune = &prune
+	}
+	return json.Marshal(aux)
+}
+
+// SessionPruneConfig controls automatic pruning of old chat sessions.
+//
+// The seahorse context manager bootstraps every session into SQLite on
+// startup, so the cost of a gateway start grows with the number of sessions
+// and the size of their history. Without pruning, a device can end up with
+// hundreds of sessions and a large seahorse.db, making startup take minutes.
+//
+// Pruning is opt-in (Enabled=false by default) because it deletes data.
+// A recommended, conservative configuration for a small device is:
+//
+//	"prune": {
+//	  "enabled": true,
+//	  "max_age_days": 30,
+//	  "max_sessions": 100,
+//	  "max_db_size_mb": 128,
+//	  "check_interval_minutes": 60,
+//	  "vacuum": true
+//	}
+//
+// A threshold of 0 disables that specific check. Sessions are always deleted
+// oldest-first by last activity, and the single most recently active session is
+// never deleted, whatever the thresholds are. Sessions without a usable
+// timestamp are never deleted either.
+type SessionPruneConfig struct {
+	// Enabled turns automatic session pruning on. Default false: nothing is
+	// deleted unless the user opts in.
+	Enabled bool `json:"enabled" env:"PICOCLAW_SESSION_PRUNE_ENABLED"`
+
+	// MaxAgeDays deletes sessions whose last activity is older than this many
+	// days. 0 disables age-based pruning.
+	MaxAgeDays int `json:"max_age_days,omitempty" env:"PICOCLAW_SESSION_PRUNE_MAX_AGE_DAYS"`
+
+	// MaxSessions keeps at most this many of the most recently active sessions.
+	// 0 disables the session-count cap.
+	MaxSessions int `json:"max_sessions,omitempty" env:"PICOCLAW_SESSION_PRUNE_MAX_SESSIONS"`
+
+	// MaxDBSizeMB is a safety net: when the seahorse SQLite database exceeds
+	// this size, the oldest remaining sessions are pruned (and the database is
+	// vacuumed) until it fits. 0 disables the size guard.
+	MaxDBSizeMB int `json:"max_db_size_mb,omitempty" env:"PICOCLAW_SESSION_PRUNE_MAX_DB_SIZE_MB"`
+
+	// CheckIntervalMinutes is how often the background prune pass runs.
+	// Defaults to 60 when 0.
+	CheckIntervalMinutes int `json:"check_interval_minutes,omitempty" env:"PICOCLAW_SESSION_PRUNE_CHECK_INTERVAL_MINUTES"`
+
+	// Vacuum gives freed space back to the filesystem (SQLite VACUUM, which
+	// blocks writers while it runs) after a prune pass that deleted sessions.
+	// A pass only vacuums when that returns a meaningful share of the file;
+	// the database-size guard always vacuums because it needs the file to
+	// shrink. Defaults to true when omitted.
+	Vacuum *bool `json:"vacuum,omitempty" env:"PICOCLAW_SESSION_PRUNE_VACUUM"`
+}
+
+// IsZero reports whether no pruning option has been set.
+func (p SessionPruneConfig) IsZero() bool {
+	return p == SessionPruneConfig{}
+}
+
+// IsActive reports whether any pruning threshold would be enforced.
+func (p SessionPruneConfig) IsActive() bool {
+	return p.MaxAgeDays > 0 || p.MaxSessions > 0 || p.MaxDBSizeMB > 0
+}
+
+// VacuumEnabled reports whether pruned sessions should be followed by a
+// SQLite VACUUM. Defaults to true when not explicitly configured.
+func (p SessionPruneConfig) VacuumEnabled() bool {
+	if p.Vacuum == nil {
+		return true
+	}
+	return *p.Vacuum
+}
+
+// EffectiveCheckIntervalMinutes returns the configured interval or the default.
+func (p SessionPruneConfig) EffectiveCheckIntervalMinutes() int {
+	if p.CheckIntervalMinutes > 0 {
+		return p.CheckIntervalMinutes
+	}
+	return 60
 }
 
 // ApplyDmScope translates the user-facing dm_scope value into the internal
@@ -600,9 +698,8 @@ type FeishuSettings struct {
 }
 
 type DiscordSettings struct {
-	Token       SecureString `json:"token,omitzero" yaml:"token,omitempty" env:"PICOCLAW_CHANNELS_DISCORD_TOKEN"`
-	Proxy       string       `json:"proxy"          yaml:"-"               env:"PICOCLAW_CHANNELS_DISCORD_PROXY"`
-	MentionOnly bool         `json:"mention_only"   yaml:"-"               env:"PICOCLAW_CHANNELS_DISCORD_MENTION_ONLY"`
+	Token SecureString `json:"token,omitzero" yaml:"token,omitempty" env:"PICOCLAW_CHANNELS_DISCORD_TOKEN"`
+	Proxy string       `json:"proxy"          yaml:"-"               env:"PICOCLAW_CHANNELS_DISCORD_PROXY"`
 }
 
 type MaixCamSettings struct {
@@ -659,10 +756,9 @@ type LINESettings struct {
 }
 
 type OneBotSettings struct {
-	WSUrl              string       `json:"ws_url"                yaml:"-"                      env:"PICOCLAW_CHANNELS_ONEBOT_WS_URL"`
-	AccessToken        SecureString `json:"access_token,omitzero" yaml:"access_token,omitempty" env:"PICOCLAW_CHANNELS_ONEBOT_ACCESS_TOKEN"`
-	ReconnectInterval  int          `json:"reconnect_interval"    yaml:"-"                      env:"PICOCLAW_CHANNELS_ONEBOT_RECONNECT_INTERVAL"`
-	GroupTriggerPrefix []string     `json:"group_trigger_prefix"  yaml:"-"                      env:"PICOCLAW_CHANNELS_ONEBOT_GROUP_TRIGGER_PREFIX"`
+	WSUrl             string       `json:"ws_url"                yaml:"-"                      env:"PICOCLAW_CHANNELS_ONEBOT_WS_URL"`
+	AccessToken       SecureString `json:"access_token,omitzero" yaml:"access_token,omitempty" env:"PICOCLAW_CHANNELS_ONEBOT_ACCESS_TOKEN"`
+	ReconnectInterval int          `json:"reconnect_interval"    yaml:"-"                      env:"PICOCLAW_CHANNELS_ONEBOT_RECONNECT_INTERVAL"`
 }
 
 type WeComGroupConfig struct {
@@ -701,7 +797,6 @@ type PicoSettings struct {
 	Streaming       StreamingConfig `json:"streaming,omitzero"          yaml:"-"`
 	PingInterval    int             `json:"ping_interval,omitempty"     yaml:"-"`
 	ReadTimeout     int             `json:"read_timeout,omitempty"      yaml:"-"`
-	WriteTimeout    int             `json:"write_timeout,omitempty"     yaml:"-"`
 	MaxConnections  int             `json:"max_connections,omitempty"   yaml:"-"`
 }
 
@@ -1341,6 +1436,15 @@ func (c *SkillRegistryConfig) DecodeParam(target any) error {
 	return json.Unmarshal(data, target)
 }
 
+// MCPOAuthConfig enables browser-based OAuth for a remote MCP server.
+// Empty client_id uses dynamic client registration.
+type MCPOAuthConfig struct {
+	ClientID     string   `json:"client_id,omitempty"`
+	Issuer       string   `json:"issuer,omitempty"`
+	Scopes       []string `json:"scopes,omitempty"`
+	CallbackPort int      `json:"callback_port,omitempty"`
+}
+
 // MCPServerConfig defines configuration for a single MCP server
 type MCPServerConfig struct {
 	// Enabled indicates whether this MCP server is active
@@ -1370,6 +1474,8 @@ type MCPServerConfig struct {
 	URL string `json:"url,omitempty"`
 	// Headers are HTTP headers to send with requests (sse/http only)
 	Headers map[string]string `json:"headers,omitempty"`
+	// OAuth opts into browser login and persisted credentials.
+	OAuth *MCPOAuthConfig `json:"oauth,omitempty"`
 }
 
 // MCPConfig defines configuration for all MCP servers

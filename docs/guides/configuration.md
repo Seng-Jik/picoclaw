@@ -180,11 +180,11 @@ Once skills are installed, and MCP servers are configured, you can inspect and f
 
 - `/list skills` shows the installed skill names available to the current agent.
 - `/list mcp` shows configured MCP servers with enabled/deferred/connected status.
+- `/list plugins` shows installed plugin packages with their state (ready, degraded, failed, disabled, not enabled) and path.
 - `/show mcp <server>` shows the active tools exposed by a connected MCP server.
 - `/use <skill> <message>` forces a specific skill for a single request.
 - `/use <skill>` arms that skill for your next message in the same chat session.
 - `/use clear` cancels a pending skill override created by `/use <skill>`.
-- `/btw <question>` asks an immediate side question without changing the current session history. `/btw` is handled as a no-tool query and does not enter the normal tool-execution flow.
 
 Examples:
 
@@ -193,7 +193,6 @@ Examples:
 /list mcp
 /show mcp github
 /use git explain how to squash the last 3 commits
-/btw remind me what we already decided about the deploy plan
 /use italiapersonalfinance
 dammi le ultime news
 ```
@@ -201,7 +200,7 @@ dammi le ultime news
 ### Unified Command Execution Policy
 
 - Generic slash commands are executed through a single path in `pkg/agent/loop.go` via `commands.Executor`.
-- Channel adapters no longer consume generic commands locally; they forward inbound text to the bus/agent path. Telegram still auto-registers supported commands such as `/start`, `/help`, `/show`, `/list`, `/use`, and `/btw` at startup.
+- Channel adapters no longer consume generic commands locally; they forward inbound text to the bus/agent path. Telegram still auto-registers supported commands such as `/start`, `/help`, `/show`, `/list`, `/use` at startup.
 - Unknown slash command (for example `/foo`) passes through to normal LLM processing.
 - Registered but unsupported command on the current channel (for example `/show` on WhatsApp) returns an explicit user-facing error and stops further processing.
 
@@ -1106,7 +1105,7 @@ This keeps the runtime lightweight while making new OpenAI-compatible backends m
       "max_tokens": 8192,
       "temperature": 0.7,
       "max_tool_iterations": 20,
-      "max_parallel_turns": 1
+      "max_parallel_turns": 5
     }
   },
   "providers": {
@@ -1120,7 +1119,7 @@ This keeps the runtime lightweight while making new OpenAI-compatible backends m
 
 > **Note**: The `providers` format is deprecated. Use the new `model_list` format with `.security.yml` for better security.
 >
-> **`max_parallel_turns`**: Controls concurrent processing of messages from different sessions. `1` (default) = sequential; `>1` = parallel. Messages from the same session are always serialized. See [Steering docs](../architecture/steering.md) for details.
+> **`max_parallel_turns`**: Controls concurrent processing of messages from different sessions. `5` is the default; `0` or `1` = sequential; `>1` = parallel. Messages from the same session are always serialized. See [Steering docs](../architecture/steering.md) for details.
 
 </details>
 

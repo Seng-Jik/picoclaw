@@ -1,18 +1,18 @@
 <div align="center">
 <img src="assets/logo.webp" alt="PicoClaw" width="512">
 
-<h1>PicoClaw: Ultra-Efficient AI Assistant in Go</h1>
+<h1>PicoClaw: The Ultra-Lightweight Agent the Upstream No Longer Is — for RISC-V, SBCs, and Embedded Systems</h1>
 
-<h3>$10 Hardware · 10MB RAM · ms Boot · Let's Go, PicoClaw!</h3>
+<h3>$10 Hardware · 10–20 MB RAM · ms Boot · Let's Go, PicoClaw!</h3>
   <p>
-    <img src="https://img.shields.io/badge/Go-1.27.1+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go">
+    <img src="https://img.shields.io/badge/Go-1.27.2+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go">
     <img src="https://img.shields.io/badge/Arch-x86__64%2C%20ARM64%2C%20MIPS%2C%20RISC--V%2C%20LoongArch-blue" alt="Hardware">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
     <br>
-    <a href="https://picoclaw.io"><img src="https://img.shields.io/badge/Website-picoclaw.io-blue?style=flat&logo=google-chrome&logoColor=white" alt="Website"></a>
-    <a href="https://docs.picoclaw.io/"><img src="https://img.shields.io/badge/Docs-Official-007acc?style=flat&logo=read-the-docs&logoColor=white" alt="Docs"></a>
+    <a href="https://afjcjsbx.github.io/picoclaw/"><img src="https://img.shields.io/badge/Docs-Official-007acc?style=flat&logo=read-the-docs&logoColor=white" alt="Docs"></a>
+    <a href="https://github.com/afjcjsbx/picoclaw/releases/latest"><img src="https://img.shields.io/github/v/release/afjcjsbx/picoclaw?style=flat&label=Latest%20release" alt="Latest release"></a>
     <a href="https://discord.gg/bEuEDnKpf"><img src="https://img.shields.io/badge/Discord-Community-5865F2?style=flat&logo=discord&logoColor=white" alt="Discord"></a>
-    <a href="https://deepwiki.com/sipeed/picoclaw"><img src="https://img.shields.io/badge/Wiki-DeepWiki-FFA500?style=flat&logo=wikipedia&logoColor=white" alt="Wiki"></a>
+    <a href="https://deepwiki.com/afjcjsbx/picoclaw"><img src="https://img.shields.io/badge/Wiki-DeepWiki-FFA500?style=flat&logo=wikipedia&logoColor=white" alt="Wiki"></a>
     <br>
 
   </p>
@@ -31,7 +31,7 @@ This repository is an actively maintained fork of PicoClaw. Development continue
 
 **PicoClaw** is an ultra-lightweight personal AI assistant inspired by [NanoBot](https://github.com/HKUDS/nanobot). It was rebuilt from the ground up in **Go** through a "self-bootstrapping" process — the AI Agent itself drove the architecture migration and code optimization.
 
-**Runs on $10 hardware with <10MB RAM** — that's 99% less memory than OpenClaw and 98% cheaper than a Mac mini!
+**Runs on $10 hardware with 10–20 MB RAM in recent builds.**
 
 <table align="center">
 <tr align="center">
@@ -55,7 +55,7 @@ This repository is an actively maintained fork of PicoClaw. Development continue
 > * **OFFICIAL DOMAIN:** The **ONLY** official website is **[picoclaw.io](https://picoclaw.io)**, and company website is **[sipeed.com](https://sipeed.com)**
 > * **BEWARE:** Many `.ai/.org/.com/.net/...` domains have been registered by third parties. Do not trust them.
 > * **NOTE:** PicoClaw is in early rapid development. There may be unresolved security issues. Do not deploy to production before v1.0.
-> * **NOTE:** PicoClaw has recently merged many PRs. Recent builds may use 10-20MB RAM. Resource optimization is planned after feature stabilization.
+> * **NOTE:** PicoClaw has recently merged many PRs. Recent builds may use 10–20 MB RAM. Resource optimization is planned after feature stabilization.
 
 ## 📢 News
 
@@ -106,7 +106,7 @@ This repository is an actively maintained fork of PicoClaw. Development continue
 
 ## ✨ Features
 
-🪶 **Ultra-lightweight**: Core memory footprint <10MB — 99% smaller than OpenClaw.*
+🪶 **Ultra-lightweight**: Recent core builds use 10–20 MB of RAM.
 
 💰 **Minimal cost**: Efficient enough to run on $10 hardware — 98% cheaper than a Mac mini.
 
@@ -118,24 +118,31 @@ This repository is an actively maintained fork of PicoClaw. Development continue
 
 🔌 **MCP support**: Native [Model Context Protocol](https://modelcontextprotocol.io/) integration — connect any MCP server to extend Agent capabilities.
 
+🧩 **Agent Plugins**: Install and activate Agent Plugins 1.0.0 packages that bundle skills and MCP servers. See the [plugin installation guide](docs/guides/plugins.md).
+
 👁️ **Vision pipeline**: Send images and files directly to the Agent — automatic base64 encoding for multimodal LLMs.
 
 🧠 **Smart routing**: Rule-based model routing — simple queries go to lightweight models, saving API costs.
 
-_*Recent builds may use 10-20MB due to rapid PR merges. Resource optimization is planned. Boot speed comparison based on 0.8GHz single-core benchmarks (see table below)._
+_*Memory use varies by build and workload. Boot speed comparison is based on 0.8GHz single-core benchmarks (see table below)._
 
 <div align="center">
 
-|                                | OpenClaw      | NanoBot                  | **PicoClaw**                           |
-| ------------------------------ | ------------- | ------------------------ | -------------------------------------- |
-| **Language**                   | TypeScript    | Python                   | **Go**                                 |
-| **RAM**                        | >1GB          | >100MB                   | **< 10MB***                            |
-| **Boot time**</br>(0.8GHz core) | >500s         | >30s                     | **<1s**                                |
-| **Cost**                       | Mac Mini $599 | Most Linux boards ~$50   | **Any Linux board**</br>**from $10**   |
+|                                | OpenClaw | NanoBot | **PicoClaw** |
+| ------------------------------ | -------- | ------- | ------------ |
+| **Language**                   | TypeScript | Python | **Go** |
+| **RAM reference**              | [2 GB host RAM recommended](https://docs.openclaw.ai/install/fly) | [~200–600 MB reported](https://github.com/HKUDS/nanobot/issues/3410) | **10–20 MB in recent builds** |
+| **Single executable**          | No (Node.js app) | No (Python app with native TUI component) | **[35.36 MiB](docs/guides/custom-builds.md#measured-binary-sizes)** |
+| **Boot time**</br>(0.8GHz core) | >500s | >30s | **<1s** |
+| **Cost**                       | Mac Mini $599 | Most Linux boards ~$50 | **Any Linux board**</br>**from $10** |
 
 <img src="assets/compare.jpg" alt="PicoClaw" width="512">
 
 </div>
+
+**RAM:** These are references, not a controlled comparison: OpenClaw's value is a deployment recommendation, NanoBot's is one Raspberry Pi 4 user report, and PicoClaw's is the estimate for recent builds.
+
+**Executable size:** OpenClaw and NanoBot do not distribute the complete agent as one executable. PicoClaw's size is the measured full default macOS ARM64 build; see the [measurement method and other profiles](docs/guides/custom-builds.md#measured-binary-sizes).
 
 > **[Hardware Compatibility List](docs/guides/hardware-compatibility.md)** — See all tested boards, from $5 RISC-V to Raspberry Pi to Android phones. Your board not listed? Submit a PR!
 
@@ -179,6 +186,22 @@ PicoClaw can be deployed on virtually any Linux device!
 
 ## 📦 Install
 
+### Quick install with Web UI
+
+On Linux or macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/afjcjsbx/picoclaw/main/scripts/install.sh | sh
+```
+
+On Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/afjcjsbx/picoclaw/main/scripts/install.ps1 | iex
+```
+
+The installer detects the CPU architecture, verifies the release checksum, installs both binaries, and starts the launcher. The Web UI opens at `http://localhost:18800`; on first run, create its dashboard password in the browser.
+
 ### Download precompiled binary
 
 Download the binary for your platform from this repository's [GitHub Releases](https://github.com/afjcjsbx/picoclaw/releases).
@@ -187,7 +210,7 @@ Download the binary for your platform from this repository's [GitHub Releases](h
 
 Prerequisites:
 
-- Go 1.27.1+
+- Go 1.27.2+
 - Node.js 22+ and pnpm 10.33.0+ for Web UI / launcher builds
 
 ```bash
@@ -265,7 +288,7 @@ picoclaw-launcher
 
 Open the WebUI, then: **1)** Configure a Provider (add your LLM API key) -> **2)** Configure a Channel (e.g., Telegram) -> **3)** Start the Gateway -> **4)** Chat!
 
-For detailed WebUI documentation, see [docs.picoclaw.io](https://docs.picoclaw.io).
+For detailed WebUI documentation, see [PicoClaw documentation](https://afjcjsbx.github.io/picoclaw/).
 
 <details>
 <summary><b>Docker (alternative)</b></summary>
@@ -543,6 +566,13 @@ PicoClaw includes built-in tools for file operations, code execution, scheduling
 
 ## 🎯 Skills
 
+Skills and MCP servers can also be packaged together as portable **Agent Plugins 1.0.0**.
+See the [plugin guide](docs/guides/plugins.md) and the
+[working demo plugin](examples/plugins/demo-plugin).
+Mem0 publishes its own
+[Agent Plugin](https://github.com/mem0ai/mem0/tree/main/integrations/mem0-agent-plugin);
+see the [compatibility notes](docs/guides/plugins.md#mem0) before enabling it.
+
 Skills are modular capabilities that extend your Agent. They are loaded from `SKILL.md` files in your workspace.
 
 **Install skills from ClawHub:**
@@ -671,6 +701,7 @@ For detailed guides beyond this README:
 | [Docker & Quick Start](docs/guides/docker.md) | Docker Compose setup, Launcher/Agent modes |
 | [Chat Apps](docs/guides/chat-apps.md) | All 18+ channel setup guides |
 | [Configuration](docs/guides/configuration.md) | Environment variables, workspace layout, security sandbox |
+| [Plugin Installation](docs/guides/plugins.md) | Install and activate Agent Plugin packages |
 | [MCP Server CLI](docs/reference/mcp-cli.md) | Add, list, test, edit, and remove MCP server entries from the CLI |
 | [Scheduled Tasks and Cron Jobs](docs/reference/cron.md) | Cron schedule types, deliver modes, command gates, job storage |
 | [Providers & Models](docs/guides/providers.md) | 30+ LLM providers, model routing, model_list configuration |

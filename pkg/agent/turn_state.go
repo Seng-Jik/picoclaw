@@ -383,6 +383,36 @@ func (al *AgentLoop) GetActiveTurnBySession(sessionKey string) *ActiveTurnInfo {
 // turnState - getters and setters
 // =============================================================================
 
+// GetActiveTurnTree returns the active root turn of sessionKey followed by its
+// still-running descendant SubTurns (subagents), depth-first. The root is always
+// the first element. Children that already finished are skipped. Returns nil when
+// the session has no active turn.
+func (al *AgentLoop) GetActiveTurnTree(sessionKey string) []ActiveTurnInfo {
+	root := al.getActiveTurnState(sessionKey)
+	if root == nil {
+		return nil
+	}
+
+	var tree []ActiveTurnInfo
+	var walk func(ts *turnState)
+	walk = func(ts *turnState) {
+		info := ts.snapshot()
+		tree = append(tree, info)
+		for _, childID := range info.ChildTurnIDs {
+			// SubTurns are registered under their own turn ID, not the session key.
+			val, ok := al.activeTurnStates.Load(childID)
+			if !ok {
+				continue
+			}
+			if child, ok := val.(*turnState); ok {
+				walk(child)
+			}
+		}
+	}
+	walk(root)
+	return tree
+}
+
 func (ts *turnState) snapshot() ActiveTurnInfo {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
@@ -657,13 +687,14 @@ func (ts *turnState) hardAbortRequested() bool {
 func (ts *turnState) eventMeta(source, tracePath string) HookMeta {
 	snap := ts.snapshot()
 	return HookMeta{
-		AgentID:     snap.AgentID,
-		TurnID:      snap.TurnID,
-		SessionKey:  snap.SessionKey,
-		Iteration:   snap.Iteration,
-		Source:      source,
-		TracePath:   tracePath,
-		turnContext: cloneTurnContext(ts.turnCtx),
+		AgentID:              snap.AgentID,
+		TurnID:               snap.TurnID,
+		SessionKey:           snap.SessionKey,
+		Iteration:            snap.Iteration,
+		Source:               source,
+		TracePath:            tracePath,
+		turnContext:          cloneTurnContext(ts.turnCtx),
+		suppressToolFeedback: ts.opts.SuppressToolFeedback,
 	}
 }
 
@@ -820,15 +851,17 @@ func (ts *turnState) interruptHintMessage() providers.Message {
 // SubTurn-related methods
 // =============================================================================
 
-// Finish marks the turn as finished and closes the pendingResults channel
+// Finish marks the turn as finished, signals waiting SubTurns and cancels the
+// turn context.
 func (ts *turnState) Finish(isHardAbort bool) {
 	ts.isFinished.Store(true)
 
-	// Close pendingResults channel exactly once
+	// Close the finished signal exactly once. pendingResults is intentionally
+	// left open: concurrent SubTurn deliveries may still be sending on it and
+	// closing it here would race with deliverSubTurnResult, turning valid
+	// deliveries into recovered "send on closed channel" panics. The channel is
+	// reclaimed by the GC together with the turn state.
 	ts.closeOnce.Do(func() {
-		if ts.pendingResults != nil {
-			close(ts.pendingResults)
-		}
 		ts.mu.Lock()
 		if ts.finishedChan == nil {
 			ts.finishedChan = make(chan struct{})

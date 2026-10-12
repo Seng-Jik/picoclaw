@@ -29,6 +29,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/state"
+	"github.com/sipeed/picoclaw/pkg/tools"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
@@ -59,6 +60,7 @@ type AgentLoop struct {
 	ttsProvider    tts.TTSProvider
 	cmdRegistry    *commands.Registry
 	mcp            mcpRuntime
+	plugins        pluginRuntime
 	evolution      *evolutionBridge
 	hookRuntime    hookRuntime
 	steering       *steeringQueue
@@ -155,6 +157,7 @@ const (
 
 func (al *AgentLoop) Run(ctx context.Context) error {
 	al.running.Store(true)
+	al.startPlugins()
 	defer al.running.Store(false)
 
 	if err := al.ensureHooksInitialized(ctx); err != nil {
@@ -336,6 +339,7 @@ func (al *AgentLoop) Stop() {
 
 // Close releases resources held by agent session stores. Call after Stop.
 func (al *AgentLoop) Close() {
+	al.closePlugins(true)
 	mcpManager := al.mcp.takeManager()
 
 	if mcpManager != nil {
@@ -364,6 +368,15 @@ func (al *AgentLoop) Close() {
 	if al.runtimeEvents != nil && al.ownsRuntimeEvents {
 		if err := al.runtimeEvents.Close(); err != nil {
 			logger.ErrorCF("agent", "Failed to close runtime event bus",
+				map[string]any{
+					"error": err.Error(),
+				})
+		}
+	}
+
+	if closer, ok := al.contextManager.(interface{ Close() error }); ok {
+		if err := closer.Close(); err != nil {
+			logger.ErrorCF("agent", "Failed to close context manager",
 				map[string]any{
 					"error": err.Error(),
 				})
@@ -463,6 +476,7 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	al.refreshRuntimeEventLogger(cfg)
 
 	oldMCPManager := al.mcp.reset()
+	al.closePlugins(false)
 	al.hookRuntime.reset(al)
 	configureHookManagerFromConfig(al.hooks, cfg)
 	if err := al.ensureHooksInitialized(ctx); err != nil {
@@ -485,6 +499,7 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 		logger.WarnCF("agent", "MCP failed to reinitialize after reload",
 			map[string]any{"error": err.Error()})
 	}
+	al.startPlugins()
 
 	// Close old provider after releasing the lock
 	// This prevents blocking readers while closing
@@ -576,6 +591,11 @@ func (al *AgentLoop) runAgentLoop(
 		newTurnContext(opts.Dispatch.InboundContext, opts.Dispatch.RouteResult, opts.Dispatch.SessionScope),
 	)
 	ts := newTurnState(agent, opts, turnScope)
+
+	// Every turn owns its SubTurn result channel. Without it, async results
+	// can never be delivered back to the turn.
+	ts.pendingResults = make(chan *tools.ToolResult, subTurnPendingResultsBuffer)
+
 	pipeline := NewPipeline(al)
 	result, err := al.runTurn(ctx, ts, pipeline)
 	if err != nil {
@@ -667,24 +687,12 @@ func (al *AgentLoop) runAgentLoop(
 // Counts Content, ToolCalls arguments, and ToolCallID metadata so that
 // tool-heavy conversations are not systematically undercounted.
 
-// askSideQuestion handles /btw commands by creating an isolated provider instance
-// that doesn't share state with the main conversation provider.
-
 // shallowCloneLLMOptions creates a shallow copy of LLM options map.
 // Note: This is a shallow copy - nested maps/slices are shared.
 
 // hasMediaRefs checks if any message has media references.
 
-// isolatedSideQuestionProvider creates a separate provider instance for /btw commands
-// to avoid sharing state with the main conversation provider.
-
-// sideQuestionModelConfig resolves the model config for side questions.
-
-// sideQuestionModelName determines which model name to use for side questions.
-
 // modelNameFromIdentityKey extracts the model name from an identity key.
-
-// closeProviderIfStateful closes a provider if it implements StatefulProvider.
 
 // makePendingTurnID generates a unique turn ID for placeholder turns.
 // Format: "pending-{sessionKey}-{sequence}"
