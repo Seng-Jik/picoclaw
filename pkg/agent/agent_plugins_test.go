@@ -67,6 +67,44 @@ func agentPluginFixture(t *testing.T, cfg *config.Config, url string) string {
 	return root
 }
 
+func TestPluginRelativePath(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator), "plugin-root")
+	cases := []struct {
+		name string
+		path string
+		want string
+	}{
+		{"skill file", filepath.Join(root, "skills", "greet", "SKILL.md"), "skills/greet/SKILL.md"},
+		{"dot-prefixed dir is kept", filepath.Join(root, "..foo", "SKILL.md"), "..foo/SKILL.md"},
+		{"root itself", root, ""},
+		{"escapes root", filepath.Join(root, "..", "outside", "SKILL.md"), ""},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		if got := pluginRelativePath(root, tc.path); got != tc.want {
+			t.Errorf("%s: pluginRelativePath(%q) = %q, want %q", tc.name, tc.path, got, tc.want)
+		}
+	}
+}
+
+func catalogLocations(summary string) []string {
+	var out []string
+	const open, closeTag = "<location>", "</location>"
+	for {
+		start := strings.Index(summary, open)
+		if start < 0 {
+			return out
+		}
+		summary = summary[start+len(open):]
+		end := strings.Index(summary, closeTag)
+		if end < 0 {
+			return out
+		}
+		out = append(out, summary[:end])
+		summary = summary[end+len(closeTag):]
+	}
+}
+
 func TestPluginToolDeferredOverride(t *testing.T) {
 	deferred := true
 	eager := false
@@ -96,7 +134,7 @@ func TestAgentPluginsLoadExecuteAndReload(t *testing.T) {
 	al, cfg, _, _, cleanup := newTestAgentLoop(t)
 	defer cleanup()
 	defer al.Close()
-	agentPluginFixture(t, cfg, httpServer.URL)
+	pluginRoot := agentPluginFixture(t, cfg, httpServer.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := al.ProcessDirect(ctx, "hi", "plugin-test"); err != nil {
@@ -119,8 +157,24 @@ func TestAgentPluginsLoadExecuteAndReload(t *testing.T) {
 	if _, ok := agent.ContextBuilder.ResolveSkillName("test-plugin:greet"); !ok {
 		t.Fatal("plugin skill missing")
 	}
-	if !strings.Contains(agent.ContextBuilder.buildSkillsSummary(nil), "test-plugin:greet") {
+	summary := agent.ContextBuilder.buildSkillsSummary(nil)
+	if !strings.Contains(summary, "test-plugin:greet") {
 		t.Fatal("missing skill prompt")
+	}
+	// The catalog must not expose the plugin's host filesystem path: the agent
+	// cannot read it and would loop against the workspace guard. It must point
+	// at the plugin resource tool with a plugin-relative path instead.
+	locations := catalogLocations(summary)
+	if len(locations) != 1 || locations[0] != "skills/greet/SKILL.md" {
+		t.Fatalf("plugin catalog locations = %q, want [skills/greet/SKILL.md]:\n%s", locations, summary)
+	}
+	for _, loc := range locations {
+		if filepath.IsAbs(loc) || strings.Contains(loc, pluginRoot) {
+			t.Fatalf("plugin catalog leaked absolute host path %q:\n%s", loc, summary)
+		}
+	}
+	if !strings.Contains(summary, "<resource-tool>plugin_test-plugin_package_read_resource_") {
+		t.Fatalf("plugin catalog missing resource-tool guidance:\n%s", summary)
 	}
 	cfg.Plugins.Enabled = false
 	if err := al.ReloadProviderAndConfig(ctx, &mockProvider{}, cfg); err != nil {
@@ -175,12 +229,58 @@ func TestPluginHookScope(t *testing.T) {
 	}
 }
 
+func TestPluginMCPHookCacheIsBounded(t *testing.T) {
+	hook := &pluginMCPHook{turnResults: make(map[string]string)}
+	for i := 0; i < maxCachedTurnResults*3; i++ {
+		hook.cacheTurnResult(fmt.Sprintf("turn-%d", i), "value")
+	}
+	hook.cacheMu.Lock()
+	defer hook.cacheMu.Unlock()
+	if len(hook.turnResults) > maxCachedTurnResults {
+		t.Fatalf("turn cache grew to %d entries", len(hook.turnResults))
+	}
+}
+
+func TestBoundedHookTextKeepsValidUTF8(t *testing.T) {
+	if got := boundedHookText("  hi  ", 100); got != "hi" {
+		t.Fatalf("trim = %q", got)
+	}
+	// "é" is two bytes; a byte limit must not leave a dangling continuation byte.
+	if got := boundedHookText("aé", 2); got != "a" {
+		t.Fatalf("truncation = %q", got)
+	}
+	if got := boundedHookText("abc", 2); got != "ab" {
+		t.Fatalf("ascii truncation = %q", got)
+	}
+}
+
+func TestRuntimeEventTurnCompletedGate(t *testing.T) {
+	completed := runtimeevents.Event{
+		Kind:    runtimeevents.KindAgentTurnEnd,
+		Payload: TurnEndPayload{Status: TurnEndStatusCompleted},
+	}
+	failed := runtimeevents.Event{
+		Kind:    runtimeevents.KindAgentTurnEnd,
+		Payload: TurnEndPayload{Status: TurnEndStatusError},
+	}
+	other := runtimeevents.Event{Kind: runtimeevents.KindAgentLLMRequest}
+	if !runtimeEventTurnCompleted(completed) {
+		t.Fatal("completed turn end was not recognized")
+	}
+	if runtimeEventTurnCompleted(failed) {
+		t.Fatal("failed turn end was treated as completed")
+	}
+	if !runtimeEventTurnCompleted(other) {
+		t.Fatal("non turn-end event must not be gated")
+	}
+}
+
 func TestOfficialMem0PluginRemoteMCPAndNativeHooks(t *testing.T) {
 	t.Setenv("MEM0_API_KEY", "test-mem0-token")
 	type searchInput struct {
 		Query   string         `json:"query"`
 		Filters map[string]any `json:"filters"`
-		Limit   int            `json:"limit"`
+		TopK    int            `json:"top_k"`
 	}
 	type addInput struct {
 		Text     string         `json:"text"`
@@ -251,7 +351,7 @@ func TestOfficialMem0PluginRemoteMCPAndNativeHooks(t *testing.T) {
 		`{"$schema":"https://agent-plugins.org/schemas/1.0.0/mcp.schema.json","mcpServers":{"mem0":{"type":"stdio","command":"python3","args":["${PLUGIN_ROOT}/core/mcp_server.py"]}}}`,
 	)
 	write("com.sipeed.picoclaw/hooks.json", `{"hooks":[
-		{"name":"recall","intercept":["before_llm"],"mcp":{"server":"mem0","tool":"search_memories","arguments":{"query":"${user_message}","filters":{"AND":[{"user_id":"alice"},{"app_id":"project-a"}]},"limit":5},"result":"append_to_user_message"}},
+		{"name":"recall","intercept":["before_llm"],"mcp":{"server":"mem0","tool":"search_memories","arguments":{"query":"${user_message}","filters":{"AND":[{"user_id":"alice"},{"app_id":"project-a"}]},"top_k":5},"result":"append_to_user_message"}},
 		{"name":"capture","observe":["turn_completed"],"mcp":{"server":"mem0","tool":"add_memory","arguments":{"text":"User: ${user_message}\nAssistant: ${assistant_message}","user_id":"alice","app_id":"project-a","metadata":{"source":"picoclaw"}}}}
 	]}`)
 	write("skills/remember/SKILL.md", "---\nname: remember\ndescription: Remember a fact\n---\nRemember it.\n")
@@ -434,7 +534,7 @@ drainFeedback:
 	}
 	if !strings.Contains(searches[0].Query, "What did we decide?") ||
 		!strings.Contains(searches[1].Query, "What about the next topic?") ||
-		!strings.Contains(fmt.Sprint(searches[0].Filters), "project-a") || searches[0].Limit != 5 {
+		!strings.Contains(fmt.Sprint(searches[0].Filters), "project-a") || searches[0].TopK != 5 {
 		t.Fatalf("unscoped recall: %+v", searches[0])
 	}
 	if adds[0].UserID != "alice" || adds[0].AppID != "project-a" || !strings.Contains(adds[0].Text, "saved response") {

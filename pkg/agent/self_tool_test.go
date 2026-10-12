@@ -26,6 +26,7 @@ func (r *selfToolTestRuntime) Set(_ context.Context, key string, value any) erro
 	r.setKey, r.setValue = key, value
 	return nil
 }
+
 func (r *selfToolTestRuntime) Reset(_ context.Context, key string) error {
 	r.resetKey = key
 	return nil

@@ -264,6 +264,10 @@ type turnState struct {
 	loopDetectionNext    int
 	loopDetectionConfig  config.LoopDetectionConfig
 
+	// Latest explanation shown in compact tool feedback (channels that cannot
+	// edit messages), used to avoid repeating it on every tool call.
+	lastToolFeedbackExplanation string
+
 	// maxIterationsOverride is the limit the session chose through the self
 	// tool; 0 keeps the agent's configured limit.
 	maxIterationsOverride atomic.Int64
@@ -407,6 +411,36 @@ func (al *AgentLoop) GetActiveTurnBySession(sessionKey string) *ActiveTurnInfo {
 // =============================================================================
 // turnState - getters and setters
 // =============================================================================
+
+// GetActiveTurnTree returns the active root turn of sessionKey followed by its
+// still-running descendant SubTurns (subagents), depth-first. The root is always
+// the first element. Children that already finished are skipped. Returns nil when
+// the session has no active turn.
+func (al *AgentLoop) GetActiveTurnTree(sessionKey string) []ActiveTurnInfo {
+	root := al.getActiveTurnState(sessionKey)
+	if root == nil {
+		return nil
+	}
+
+	var tree []ActiveTurnInfo
+	var walk func(ts *turnState)
+	walk = func(ts *turnState) {
+		info := ts.snapshot()
+		tree = append(tree, info)
+		for _, childID := range info.ChildTurnIDs {
+			// SubTurns are registered under their own turn ID, not the session key.
+			val, ok := al.activeTurnStates.Load(childID)
+			if !ok {
+				continue
+			}
+			if child, ok := val.(*turnState); ok {
+				walk(child)
+			}
+		}
+	}
+	walk(root)
+	return tree
+}
 
 func (ts *turnState) snapshot() ActiveTurnInfo {
 	ts.mu.RLock()
@@ -846,15 +880,17 @@ func (ts *turnState) interruptHintMessage() providers.Message {
 // SubTurn-related methods
 // =============================================================================
 
-// Finish marks the turn as finished and closes the pendingResults channel
+// Finish marks the turn as finished, signals waiting SubTurns and cancels the
+// turn context.
 func (ts *turnState) Finish(isHardAbort bool) {
 	ts.isFinished.Store(true)
 
-	// Close pendingResults channel exactly once
+	// Close the finished signal exactly once. pendingResults is intentionally
+	// left open: concurrent SubTurn deliveries may still be sending on it and
+	// closing it here would race with deliverSubTurnResult, turning valid
+	// deliveries into recovered "send on closed channel" panics. The channel is
+	// reclaimed by the GC together with the turn state.
 	ts.closeOnce.Do(func() {
-		if ts.pendingResults != nil {
-			close(ts.pendingResults)
-		}
 		ts.mu.Lock()
 		if ts.finishedChan == nil {
 			ts.finishedChan = make(chan struct{})
@@ -955,4 +991,19 @@ func turnStateFromContext(ctx context.Context) *turnState {
 // TurnStateFromContext retrieves turnState from context (exported for tools)
 func TurnStateFromContext(ctx context.Context) *turnState {
 	return turnStateFromContext(ctx)
+}
+
+// repeatsToolFeedbackExplanation records explanation as the latest tool
+// feedback explanation of this turn and reports whether it equals the previous
+// one. Empty explanations are ignored.
+func (ts *turnState) repeatsToolFeedbackExplanation(explanation string) bool {
+	explanation = strings.TrimSpace(explanation)
+	if explanation == "" {
+		return false
+	}
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	repeated := explanation == ts.lastToolFeedbackExplanation
+	ts.lastToolFeedbackExplanation = explanation
+	return repeated
 }

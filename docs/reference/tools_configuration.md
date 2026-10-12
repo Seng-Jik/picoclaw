@@ -37,6 +37,8 @@ See [Sensitive Data Filtering](../security/sensitive_data_filtering.md) for full
 | `filter_sensitive_data` | bool | `true` | Enable/disable filtering |
 | `filter_min_length` | int | `8` | Minimum content length to trigger filtering |
 
+Tool call logs record only the argument **keys** and count, never the argument values, so secrets passed to a tool are not written to log files. The filter above applies to the content exchanged with the LLM, not to logs.
+
 ## Runtime self-inspection
 
 The `self` tool is disabled by default. When enabled, it exposes a filtered view

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,13 +26,16 @@ const (
 )
 
 type ProcessHookOptions struct {
-	ExactEnv      bool              // Use Env without inheriting host credentials (plugin host).
-	Config        map[string]string // Plugin-scoped configuration sent during hello.
-	Command       []string
-	Dir           string
-	Env           []string
-	Observe       bool
-	ObserveKinds  []string
+	ExactEnv     bool              // Use Env without inheriting host credentials (plugin host).
+	Config       map[string]string // Plugin-scoped configuration sent during hello.
+	Command      []string
+	Dir          string
+	Env          []string
+	Observe      bool
+	ObserveKinds []string
+	// CompletedOnly limits turn-end observation to successfully completed turns
+	// (the declared `turn_completed` alias).
+	CompletedOnly bool
 	InterceptLLM  bool
 	InterceptTool bool
 	ApproveTool   bool
@@ -198,7 +202,21 @@ func (ph *ProcessHook) OnRuntimeEvent(ctx context.Context, evt runtimeevents.Eve
 			return nil
 		}
 	}
+	if ph.opts.CompletedOnly && !runtimeEventTurnCompleted(evt) {
+		return nil
+	}
 	return ph.notify(ctx, "hook.runtime_event", evt)
+}
+
+// runtimeEventTurnCompleted reports whether an event is a successfully completed
+// turn end. Non turn-end events are not gated, so a `turn_completed` observer
+// only sees successful turn ends while other declared kinds pass through.
+func runtimeEventTurnCompleted(evt runtimeevents.Event) bool {
+	if evt.Kind != runtimeevents.KindAgentTurnEnd {
+		return true
+	}
+	payload := hookMapValue(hookJSONValue(evt), "payload")
+	return strings.EqualFold(fmt.Sprint(hookMapValue(payload, "Status")), string(TurnEndStatusCompleted))
 }
 
 func (ph *ProcessHook) BeforeLLM(

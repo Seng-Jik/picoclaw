@@ -175,11 +175,12 @@ a matching directory/name and a nonempty description.
 Skills appear as `<installation-id>:<skill-name>`, preserving the original
 frontmatter. Validated skill bodies are snapshots until configuration reload.
 Loading or removing plugin skills invalidates the prompt cache.
-
-The host provides a plugin-specific `read_resource` tool, with a `plugin_` name prefix, for bundled references
-and assets. Its name is included in the loaded skill instructions. Paths are
+The host provides a plugin-specific `read_resource` tool, with a `plugin_` name
+prefix, for bundled references. Its name is included in the loaded skill
+instructions. It accepts only UTF-8 text paths under `skills/` or `references/`,
 relative to the plugin root; reads are bounded to 2 MiB and cannot follow links
-outside it. This avoids granting general filesystem access outside the agent's
+outside it. Binary assets and files outside those two directories are not
+readable. This avoids granting general filesystem access outside the agent's
 workspace. The tool is subject to the agent's normal tool allowlist.
 
 ## MCP servers
@@ -230,7 +231,8 @@ Legacy `sse` selects the actual HTTP+SSE protocol here; this does not change the
 historical interpretation of `sse` in native PicoClaw MCP configuration.
 
 Literal credentials do not belong in portable package `env` or `headers`.
-For a remote MCP server, a header can refer to a host environment variable:
+For a remote MCP server, a header in a host `mcp_overrides` entry can refer to
+a host environment variable:
 
 ```json
 "headers": {"Authorization": "Bearer ${REMOTE_API_KEY}"}
@@ -240,9 +242,13 @@ Set `REMOTE_API_KEY` in the environment of the PicoClaw process. References
 are resolved once when the server connects. An unset or empty variable, an
 invalid reference, or a resolved header containing invalid HTTP characters
 disables that server with a diagnostic that does not contain the secret.
-Review a package's header references before enabling it: they select which
-host environment values are sent to its MCP endpoint. Stdio processes still
-receive only their explicitly configured environment.
+
+This expansion is host-only. A `${VAR}` reference written in a portable package
+`mcp.json` is sent literally and never reads the host environment; only headers
+provided through `plugins.entries.<id>.mcp_overrides.<server>` are expanded.
+Review the override's header references before enabling a plugin: they select
+which host environment values are sent to its MCP endpoint. Stdio processes
+still receive only their explicitly configured environment.
 
 Alternatively, for a server that accepts a bearer token, put it alone in a
 file under that installation's `PLUGIN_DATA` directory and configure it on
@@ -322,7 +328,7 @@ cat > "$PLUGIN_ROOT/com.sipeed.picoclaw/hooks.json" <<'JSON'
         "arguments": {
           "query": "${user_message}",
           "filters": {"AND": [{"user_id": "your-user-id"}, {"app_id": "your-project-id"}]},
-          "limit": 5
+          "top_k": 5
         },
         "result": "append_to_user_message"
       }
@@ -422,6 +428,31 @@ then ask about that fact in a later turn. The completed turn triggers
 `add_memory`; the following turn's `before_llm` hook calls `search_memories` and
 adds the result to the model context. With tool feedback enabled, these
 hook-triggered MCP calls are also shown in the conversation.
+
+#### Tuning recall
+
+`search_memories` on Mem0's hosted MCP server accepts `top_k`, the maximum
+number of memories returned. Its default is 10, so set it explicitly to bound
+how much memory context each turn injects. The hook above uses `top_k: 5`;
+values of 2–3 work well for short, focused turns:
+
+```json
+"arguments": {
+  "query": "${user_message}",
+  "filters": {"AND": [{"user_id": "your-user-id"}, {"app_id": "your-project-id"}]},
+  "top_k": 3
+}
+```
+
+Do not use `limit`: the hosted server ignores it and returns its default of 10.
+The Mem0 Platform API reference also lists `threshold`, but the hosted v3 search
+endpoint ignores it, so it does not filter results. To reduce low-relevance
+noise, lower `top_k` rather than relying on `threshold`; use the plugin's local
+MCP server or filter in the agent when you need score-based filtering.
+
+Filters accept a `created_at` range, for example
+`{"AND": [{"user_id": "your-user-id"}, {"created_at": {"gte": "2026-01-01"}}]}`,
+to prefer recent memories.
 
 The same hook declarations work with other MCP providers by changing the
 server, tool names and arguments. Supermemory, for example, uses

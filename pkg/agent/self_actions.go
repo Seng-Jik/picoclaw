@@ -355,8 +355,8 @@ func readSelfFileTail(path string, maxBytes int64) (string, error) {
 	if info.Size() > maxBytes {
 		start = info.Size() - maxBytes
 	}
-	if _, err := file.Seek(start, io.SeekStart); err != nil {
-		return "", err
+	if _, seekErr := file.Seek(start, io.SeekStart); seekErr != nil {
+		return "", seekErr
 	}
 	data, err := io.ReadAll(file)
 	if err != nil {

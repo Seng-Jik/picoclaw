@@ -222,7 +222,9 @@ func (t *SelfTool) Execute(ctx context.Context, args map[string]any) *tools.Tool
 	case "undo":
 		return t.executeUndo(ctx)
 	}
-	return tools.ErrorResult("action must be one of check, list, schema, explain, diff, history, logs, set, reset, undo")
+	return tools.ErrorResult(
+		"action must be one of check, list, schema, explain, diff, history, logs, set, reset, undo",
+	)
 }
 
 func (t *SelfTool) audit(ctx context.Context, action, detail string) {
