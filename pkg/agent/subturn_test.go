@@ -2328,3 +2328,119 @@ func TestDelegateToolRegistered_MultiAgent(t *testing.T) {
 		}
 	}
 }
+
+// ====================== Global Concurrency Limit ======================
+
+// gatedProvider signals on started when a Chat call begins and blocks until release is closed.
+type gatedProvider struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func newGatedProvider() *gatedProvider {
+	return &gatedProvider{started: make(chan struct{}, 16), release: make(chan struct{})}
+}
+
+func (p *gatedProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	toolDefs []providers.ToolDefinition,
+	model string,
+	options map[string]any,
+) (*providers.LLMResponse, error) {
+	p.started <- struct{}{}
+	select {
+	case <-p.release:
+	case <-ctx.Done():
+	}
+	return &providers.LLMResponse{Content: "done"}, nil
+}
+
+func (p *gatedProvider) GetDefaultModel() string { return "gpt-4o-mini" }
+
+func newLimitTestLoop(t *testing.T, provider providers.LLMProvider, maxConcurrent int) *AgentLoop {
+	t.Helper()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         t.TempDir(),
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+				SubTurn:           config.SubTurnConfig{MaxConcurrent: maxConcurrent},
+			},
+		},
+	}
+	return NewAgentLoop(cfg, bus.NewMessageBus(), provider)
+}
+
+func newRootTurnState(id string) *turnState {
+	return &turnState{
+		ctx:            context.Background(),
+		turnID:         id,
+		pendingResults: make(chan *tools.ToolResult, 16),
+		session:        newEphemeralSession(nil),
+	}
+}
+
+// TestSpawnSubTurn_GlobalLimitAcrossRootSpawns verifies that sub-turns spawned from a root
+// turn (which has no per-parent semaphore) still count against max_concurrent.
+func TestSpawnSubTurn_GlobalLimitAcrossRootSpawns(t *testing.T) {
+	const limit = 2
+	provider := newGatedProvider()
+	al := newLimitTestLoop(t, provider, limit)
+	parent := newRootTurnState("root-limit")
+	cfg := SubTurnConfig{Model: "gpt-4o-mini"}
+
+	var wg sync.WaitGroup
+	for i := 0; i < limit; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = spawnSubTurn(context.Background(), al, parent, cfg)
+		}()
+	}
+	for i := 0; i < limit; i++ {
+		select {
+		case <-provider.started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for sub-turns to start")
+		}
+	}
+
+	if _, err := spawnSubTurn(context.Background(), al, parent, cfg); !errors.Is(err, ErrConcurrencyLimit) {
+		t.Fatalf("expected ErrConcurrencyLimit with %d running sub-turns, got %v", limit, err)
+	}
+
+	close(provider.release)
+	wg.Wait()
+
+	if _, err := spawnSubTurn(context.Background(), al, parent, cfg); err != nil {
+		t.Fatalf("expected spawn to succeed after slots were released, got %v", err)
+	}
+}
+
+// TestSpawnSubTurn_ReleasesGlobalSlot verifies the global counter returns to zero on every exit path.
+func TestSpawnSubTurn_ReleasesGlobalSlot(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider providers.LLMProvider
+		cfg      SubTurnConfig
+	}{
+		{"success", &simpleMockProviderAPI{response: "ok"}, SubTurnConfig{Model: "gpt-4o-mini"}},
+		{"early validation error", &simpleMockProviderAPI{}, SubTurnConfig{}},
+		{"panic", &panicMockProvider{}, SubTurnConfig{Model: "gpt-4o-mini"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			al := newLimitTestLoop(t, tc.provider, 1)
+			parent := newRootTurnState("root-release")
+
+			_, _ = spawnSubTurn(context.Background(), al, parent, tc.cfg)
+
+			if got := al.activeSubTurns.Load(); got != 0 {
+				t.Fatalf("expected 0 active sub-turns after %s, got %d", tc.name, got)
+			}
+		})
+	}
+}
