@@ -381,11 +381,14 @@ func TestSelfAccessTable(t *testing.T) {
 		{"model_preset", selfAccessRestricted},
 		{"model", selfAccessReadOnly},
 		{"config", selfAccessReadOnly},
+		{"config.build_info", selfAccessReadOnly},
 		{"config.voice.elevenlabs_api_key", selfAccessReadOnly},
 		{"config.agents.list.0.subagents", selfAccessBlocked},
 		{"config.tools.mcp.servers.demo.env", selfAccessBlocked},
 		{"config.tools.mcp.discovery", selfAccessReadOnly},
 		{"config.session.identity_links", selfAccessBlocked},
+		{"config.future_section", selfAccessBlocked},
+		{"config.agents.defaults.future_key", selfAccessReadOnly},
 		{"scratchpad-plan", selfAccessDefault},
 	}
 	for _, tc := range cases {

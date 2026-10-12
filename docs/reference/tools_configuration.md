@@ -66,17 +66,20 @@ Environment variables: `PICOCLAW_TOOLS_SELF_ENABLED` and `PICOCLAW_TOOLS_SELF_AL
 The tool enforces a single access table over every path. `BLOCKED` sections
 (credentials and execution infrastructure such as `plugins`, `hooks`,
 `evolution`, `isolation`, `gateway`, `tools.mcp.servers`, dispatch and session
-routing) are omitted from reads and rejected on writes. `READ_ONLY` sections are
+routing) are omitted from reads and rejected on writes. Config is fail-closed at
+the section level: only allowlisted sections (`agents`, `session`,
+`channel_list`, `model_list`, `tools`, `events`, `voice`, `power`, `devices`,
+`heartbeat`, `version`, `build_info`) are readable, so a new configuration
+section is blocked until it is reviewed and added. `READ_ONLY` sections are
 readable but not writable. `RESTRICTED` keys are writable only for the current
 session and only inside their range: `max_iterations` (1–100) and
-`context_window_tokens` (4096–1,000,000). `config` returns the whole
-configuration as JSON-safe read-only data: `SecureString` fields are dropped and
-secret-like keys (for example `api_key`, `token`, `secret`, `password`,
-`Authorization` headers) are shown as `[REDACTED]`. A direct `model` write is
-rejected; use `model_preset` instead. `max_iterations` and
-`context_window_tokens` need a session key, so turns without one cannot change
-them. Runtime options that PicoClaw does not currently implement are not exposed
-as writable fields.
+`context_window_tokens` (4096–1,000,000). `config` returns those sections as
+JSON-safe read-only data: `SecureString` fields are dropped and secret-like keys
+(for example `api_key`, `token`, `secret`, `password`, `Authorization` headers)
+are shown as `[REDACTED]`. A direct `model` write is rejected; use
+`model_preset` instead. `max_iterations` and `context_window_tokens` need a
+session key, so turns without one cannot change them. Runtime options that
+PicoClaw does not currently implement are not exposed as writable fields.
 
 ## Protected local files
 

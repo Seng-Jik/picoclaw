@@ -54,9 +54,24 @@ var selfAccessRules = []selfAccessRule{
 	{path: "web_config", level: selfAccessReadOnly},
 	{path: "exec_config", level: selfAccessReadOnly},
 	{path: "model_presets", level: selfAccessReadOnly},
-	{path: "config", level: selfAccessReadOnly},
 
-	// Config sections. BLOCKED first by longest match.
+	// Config sections are allowlisted: an unknown key added to the config is
+	// BLOCKED by default (see selfAccessLevelFor). BLOCKED rules below win over
+	// their parent section by longest match.
+	{path: "config.version", level: selfAccessReadOnly},
+	{path: "config.build_info", level: selfAccessReadOnly},
+	{path: "config.agents", level: selfAccessReadOnly},
+	{path: "config.session", level: selfAccessReadOnly},
+	{path: "config.channel_list", level: selfAccessReadOnly},
+	{path: "config.model_list", level: selfAccessReadOnly},
+	{path: "config.events", level: selfAccessReadOnly},
+	{path: "config.heartbeat", level: selfAccessReadOnly},
+	{path: "config.power", level: selfAccessReadOnly},
+	{path: "config.devices", level: selfAccessReadOnly},
+	{path: "config.voice", level: selfAccessReadOnly},
+	{path: "config.tools", level: selfAccessReadOnly},
+
+	// Blocked config sections.
 	{path: "config.evolution", level: selfAccessBlocked},
 	{path: "config.plugins", level: selfAccessBlocked},
 	{path: "config.hooks", level: selfAccessBlocked},
@@ -132,10 +147,28 @@ func selfAccessRuleFor(path string) (selfAccessRule, bool) {
 }
 
 func selfAccessLevelFor(path string) selfAccessLevel {
+	if selfIsConfigRoot(path) {
+		return selfAccessReadOnly
+	}
 	if rule, ok := selfAccessRuleFor(path); ok {
 		return rule.level
 	}
+	// Config is fail-closed: a section or key that is not explicitly allowlisted
+	// is blocked, so a new configuration field is denied until it is reviewed.
+	if selfIsConfigPath(path) {
+		return selfAccessBlocked
+	}
 	return selfAccessDefault
+}
+
+func selfIsConfigRoot(path string) bool {
+	segments := selfSignificantSegments(path)
+	return len(segments) == 1 && segments[0] == "config"
+}
+
+func selfIsConfigPath(path string) bool {
+	segments := selfSignificantSegments(path)
+	return len(segments) > 0 && segments[0] == "config"
 }
 
 // selfPathDenied rejects metaprogramming-style and shadow segments before any
