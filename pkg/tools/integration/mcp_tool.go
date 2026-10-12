@@ -7,6 +7,7 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -79,6 +80,56 @@ func (t *MCPTool) SetEventPublisher(eventBus runtimeevents.Bus) {
 }
 
 const maxMCPInlineTextRunes = 16 * 1024
+
+// MCP large-text artifacts are written under <workspace>/.artifacts/mcp. They
+// are pruned on every write so a long-lived process cannot grow the directory
+// without bound.
+const (
+	mcpArtifactMaxAge   = 24 * time.Hour
+	mcpArtifactMaxFiles = 128
+)
+
+// pruneMCPArtifacts bounds the MCP artifact directory: it removes files older
+// than maxAge and, if the directory still exceeds maxFiles, the oldest ones.
+// Cleanup is best-effort and never fails the tool call.
+func pruneMCPArtifacts(dir string, maxAge time.Duration, maxFiles int) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	type artifact struct {
+		path    string
+		modTime time.Time
+	}
+	files := make([]artifact, 0, len(entries))
+	cutoff := time.Now().Add(-maxAge)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if maxAge > 0 && info.ModTime().Before(cutoff) {
+			_ = os.Remove(path)
+			continue
+		}
+		files = append(files, artifact{path: path, modTime: info.ModTime()})
+	}
+
+	if maxFiles <= 0 || len(files) <= maxFiles {
+		return
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].modTime.Before(files[j].modTime)
+	})
+	for _, file := range files[:len(files)-maxFiles] {
+		_ = os.Remove(file.path)
+	}
+}
 
 // sanitizeIdentifierComponent normalizes a string so it can be safely used
 // as part of a tool/function identifier for downstream providers.
@@ -452,7 +503,6 @@ func (t *MCPTool) persistLargeTextArtifact(text string) *ToolResult {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return t.largeTextArtifactFallback(text, err)
 	}
-	// TODO: Add lifecycle cleanup/retention for MCP artifact files.
 
 	pattern := fmt.Sprintf(
 		"%s_%s_*.txt",
@@ -473,6 +523,8 @@ func (t *MCPTool) persistLargeTextArtifact(text string) *ToolResult {
 		_ = os.Remove(path)
 		return t.largeTextArtifactFallback(text, err)
 	}
+
+	pruneMCPArtifacts(dir, mcpArtifactMaxAge, mcpArtifactMaxFiles)
 
 	return &ToolResult{
 		ForLLM: fmt.Sprintf(
