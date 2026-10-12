@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/state"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -202,6 +203,43 @@ func TestHeartbeatFilePath(t *testing.T) {
 	expectedPath := filepath.Join(tmpDir, "HEARTBEAT.md")
 	if _, err := os.Stat(expectedPath); os.IsNotExist(err) {
 		t.Errorf("Expected HEARTBEAT.md at %s, but it doesn't exist", expectedPath)
+	}
+}
+
+// TestExecuteHeartbeat_ResolvesChannelWrittenByAnotherManager verifies the
+// heartbeat service observes the last channel persisted by the agent loop's
+// separate state manager instance.
+func TestExecuteHeartbeat_ResolvesChannelWrittenByAnotherManager(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "heartbeat-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	hs := NewHeartbeatService(tmpDir, 30, true)
+	hs.stopChan = make(chan struct{})
+
+	// Simulate the agent loop recording the last active channel through its
+	// own Manager instance.
+	agentState := state.NewManager(tmpDir)
+	if err := agentState.SetLastChannel("telegram:999"); err != nil {
+		t.Fatalf("SetLastChannel failed: %v", err)
+	}
+
+	var gotChannel, gotChatID string
+	hs.SetHandler(func(prompt, channel, chatID string) *tools.ToolResult {
+		gotChannel, gotChatID = channel, chatID
+		return tools.SilentResult("ok")
+	})
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "HEARTBEAT.md"), []byte("Test task"), 0o644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	hs.executeHeartbeat()
+
+	if gotChannel != "telegram" || gotChatID != "999" {
+		t.Fatalf("handler got channel=%q chatID=%q, want telegram/999", gotChannel, gotChatID)
 	}
 }
 

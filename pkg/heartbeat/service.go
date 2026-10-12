@@ -185,7 +185,9 @@ func (hs *HeartbeatService) executeHeartbeat() {
 		return
 	}
 
-	// Get last channel info for context
+	// Get last channel info for context. Reload first so writes performed by
+	// the agent loop's state manager instance are visible here.
+	hs.state.Reload()
 	lastChannel := hs.state.GetLastChannel()
 	channel, chatID := hs.parseLastChannel(lastChannel)
 
@@ -334,7 +336,8 @@ func (hs *HeartbeatService) sendResponse(response string) {
 		return
 	}
 
-	// Get last channel from state
+	// Get last channel from state (reload so agent-loop writes are visible)
+	hs.state.Reload()
 	lastChannel := hs.state.GetLastChannel()
 	if lastChannel == "" {
 		hs.logInfof("No last channel recorded, heartbeat result not sent")
