@@ -425,6 +425,22 @@ func TestSendClassifiesFailuresForRetry(t *testing.T) {
 			notWant: basechannels.ErrTemporary,
 		},
 		{
+			name: "other iLink error is retried",
+			transport: func(*http.Request) (*http.Response, error) {
+				return iLinkResponse(http.StatusOK, `{"ret":-1,"errcode":0,"errmsg":"system error"}`), nil
+			},
+			want:    basechannels.ErrTemporary,
+			notWant: basechannels.ErrSendFailed,
+		},
+		{
+			name: "iLink errcode without ret is retried",
+			transport: func(*http.Request) (*http.Response, error) {
+				return iLinkResponse(http.StatusOK, `{"ret":0,"errcode":-1,"errmsg":"busy"}`), nil
+			},
+			want:    basechannels.ErrTemporary,
+			notWant: basechannels.ErrSendFailed,
+		},
+		{
 			name: "network error is retried",
 			transport: func(*http.Request) (*http.Response, error) {
 				return nil, errors.New("connection reset by peer")
@@ -474,6 +490,7 @@ func TestSendMediaClassifiesFailuresForRetry(t *testing.T) {
 		uploadURLRejected = `{"ret":-2,"errcode":0,"errmsg":"prepare failed"}`
 		sendOK            = `{"ret":0,"errcode":0}`
 		sendRejected      = `{"ret":-2,"errcode":0,"errmsg":"prepare failed"}`
+		otherILinkError   = `{"ret":-1,"errcode":0,"errmsg":"system error"}`
 	)
 	tests := []struct {
 		name          string
@@ -501,6 +518,24 @@ func TestSendMediaClassifiesFailuresForRetry(t *testing.T) {
 			wantSends:     0,
 			want:          basechannels.ErrSendFailed,
 			notWant:       basechannels.ErrTemporary,
+		},
+		{
+			name:          "other sendmessage error is retried",
+			uploadURLResp: uploadURLOK,
+			cdnStatus:     http.StatusOK,
+			sendResp:      otherILinkError,
+			wantSends:     1,
+			want:          basechannels.ErrTemporary,
+			notWant:       basechannels.ErrSendFailed,
+		},
+		{
+			name:          "other getuploadurl error is retried",
+			uploadURLResp: otherILinkError,
+			cdnStatus:     http.StatusOK,
+			sendResp:      sendOK,
+			wantSends:     0,
+			want:          basechannels.ErrTemporary,
+			notWant:       basechannels.ErrSendFailed,
 		},
 		{
 			name:          "CDN upload failure is retried",

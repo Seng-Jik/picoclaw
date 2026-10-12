@@ -1148,7 +1148,7 @@ func (c *WeixinChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 			})
 			// iLink rejected the upload or the message (or the session is
 			// paused): retrying would re-upload the file and fail the same way.
-			if c.remainingPause() > 0 || isAPIRejection(err) {
+			if c.sendFailureIsPermanent(err) {
 				return nil, fmt.Errorf("weixin send media: %w", basechannels.ErrSendFailed)
 			}
 			return nil, fmt.Errorf("weixin send media: %w", basechannels.ErrTemporary)
