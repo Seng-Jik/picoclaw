@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -868,9 +869,18 @@ func createHeartbeatHandler(agentLoop *agent.AgentLoop) func(prompt, channel, ch
 		if err != nil {
 			return tools.ErrorResult(fmt.Sprintf("Heartbeat error: %v", err))
 		}
-		if response == "HEARTBEAT_OK" {
-			return tools.SilentResult("Heartbeat OK")
-		}
-		return tools.SilentResult(response)
+		return heartbeatToolResult(response)
 	}
+}
+
+// heartbeatToolResult maps the raw heartbeat response into a ToolResult.
+// A non-empty response that is not the HEARTBEAT_OK sentinel is a quick task
+// answer and must reach the user, so it is returned as a user-facing result.
+// Everything else stays silent.
+func heartbeatToolResult(response string) *tools.ToolResult {
+	response = strings.TrimSpace(response)
+	if response == "" || response == "HEARTBEAT_OK" {
+		return tools.SilentResult("Heartbeat OK")
+	}
+	return tools.UserResult(response)
 }
