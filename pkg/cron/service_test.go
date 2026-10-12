@@ -594,6 +594,21 @@ func TestCronService_EnableJobReturnsCopy(t *testing.T) {
 	}
 }
 
+func TestCronService_NotifyNotLostWithoutReceiver(t *testing.T) {
+	cs, path := setupService(nil)
+	defer os.Remove(path)
+
+	// No scheduler loop is running, so notify's send must be buffered rather
+	// than silently dropped.
+	cs.notify()
+
+	select {
+	case <-cs.wakeChan:
+	default:
+		t.Fatal("notify was dropped because wakeChan was unbuffered")
+	}
+}
+
 func TestCronService_ConcurrentAccess(t *testing.T) {
 	cs, path := setupService(nil)
 	defer os.Remove(path)
