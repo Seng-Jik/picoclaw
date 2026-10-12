@@ -421,7 +421,7 @@ and injected into the context for a configured number of turns (`ttl`).
 |------------|---------|----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `enabled`  | bool    | yes      | Enable this MCP server                                                                                                                                          |
 | `deferred` | bool    | no       | Per-server override, effective only when `discovery.enabled` is `true`. `true` = tools are hidden and discoverable via search; `false` = tools are always visible in context. When omitted, the global `discovery.enabled` value applies. Ignored (tools always visible) when `discovery.enabled` is `false`, because the discovery search tools are not registered in that case. |
-| `type`     | string  | no       | Transport type: `stdio`, `sse`, `http`                                                                                                                          |
+| `type`     | string  | no       | Transport type: `stdio`, `sse`, `http` (alias: `streamable-http`)                                                                                               |
 | `command`  | string  | stdio    | Executable command for stdio transport                                                                                                                          |
 | `args`     | array   | no       | Command arguments for stdio transport                                                                                                                           |
 | `env`      | object  | no       | Environment variables for stdio process                                                                                                                         |
@@ -436,7 +436,7 @@ and injected into the context for a configured number of turns (`ttl`).
 - If `type` is omitted, transport is auto-detected:
     - `url` is set → `sse`
     - `command` is set → `stdio`
-- `http` and `sse` both use `url` + optional `headers`.
+- `http` and `sse` both use `url` + optional `headers`. `streamable-http` is accepted as an alias for `http`.
 - `env`, `env_file`, and `inherit_env` are only applied to `stdio` servers.
 - By default, stdio servers inherit only `PATH`, `HOME`, `USER`, `LANG`, `LC_ALL`, `TERM`, `SHELL`, `TMPDIR`, and `XDG_*` (plus basic Windows process variables on Windows). `env_file` adds variables, and `env` overrides both the file and inherited values. Set `inherit_env: true` only if the server needs the entire parent environment.
 - `oauth: {}` enables browser login with dynamic client registration. Optional

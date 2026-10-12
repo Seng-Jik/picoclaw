@@ -146,12 +146,15 @@ The table below lists the current runtime event kinds, when they are emitted, an
 
 | Event | Trigger | Details |
 | ----- | ------- | ------- |
-| `mcp.server.connecting` | The MCP manager is about to connect to a server. | `server`, `type`, `url`, `command` |
-| `mcp.server.connected` | An MCP server connects and its tool list has been initialized. | `server`, `type`, `url`, `command`, `tool_count` |
-| `mcp.server.failed` | An MCP server connection fails, or the manager is closed before connecting. | `server`, `type`, `url`, `command`, `error`; severity is `error` |
-| `mcp.tool.discovered` | A tool from an MCP server is discovered and registered. | `server`, `type`, `url`, `command`, `tool` |
+| `mcp.server.connecting` | The MCP manager is about to connect to a server. | `server`, `type` |
+| `mcp.server.connected` | An MCP server connects and its tool list has been initialized. | `server`, `type`, `tool_count` |
+| `mcp.server.failed` | An MCP server connection fails, or the manager is closed before connecting. | `server`, `type`, `error`; severity is `error` |
+| `mcp.tool.discovered` | A tool from an MCP server is discovered and registered. | `server`, `type`, `tool` |
 | `mcp.tool.call.start` | The MCP tool wrapper starts a remote tool call. | `server`, `tool`; when emitted inside an agent turn, scope includes turn/chat information |
 | `mcp.tool.call.end` | The MCP tool wrapper finishes a remote tool call, including failures. | `server`, `tool`, `duration_ms`, `is_error`, `error` |
+
+The connection payload also carries `url` and `command`, but they are not flattened into log
+attributes: URLs may embed credentials (for example API keys in query strings).
 
 ## Log Fields
 
