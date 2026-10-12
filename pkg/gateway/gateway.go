@@ -427,7 +427,9 @@ func setupAndStartServices(
 	if err = runningServices.HeartbeatService.Start(); err != nil {
 		return nil, fmt.Errorf("error starting heartbeat service: %w", err)
 	}
-	fmt.Println("✓ Heartbeat service started")
+	if cfg.Heartbeat.Enabled {
+		fmt.Println("✓ Heartbeat service started")
+	}
 	runningServices.MediaStore = media.NewFileMediaStoreWithCleanup(media.MediaCleanerConfig{
 		Enabled:  cfg.Tools.MediaCleanup.Enabled,
 		MaxAge:   time.Duration(cfg.Tools.MediaCleanup.MaxAge) * time.Minute,
@@ -674,7 +676,9 @@ func restartServices(
 	if err = runningServices.HeartbeatService.Start(); err != nil {
 		return fmt.Errorf("error restarting heartbeat service: %w", err)
 	}
-	fmt.Println("  ✓ Heartbeat service restarted")
+	if cfg.Heartbeat.Enabled {
+		fmt.Println("  ✓ Heartbeat service restarted")
+	}
 	runningServices.MediaStore = media.NewFileMediaStoreWithCleanup(media.MediaCleanerConfig{
 		Enabled:  cfg.Tools.MediaCleanup.Enabled,
 		MaxAge:   time.Duration(cfg.Tools.MediaCleanup.MaxAge) * time.Minute,
