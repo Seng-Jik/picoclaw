@@ -68,8 +68,7 @@ type AgentLoop struct {
 	pendingSkills   sync.Map
 	voiceModes      sync.Map
 	pendingStops    sync.Map
-	sessionLimits   sync.Map // sessionModelKey -> max_iterations set through the self tool
-	sessionWindows  sync.Map // sessionModelKey -> context_window_tokens set through the self tool
+	sessionRuntime  sync.Map // sessionModelKey -> sessionRuntime: self tool session overrides
 	mu              sync.RWMutex
 
 	// workerSem limits concurrent turn processing workers.

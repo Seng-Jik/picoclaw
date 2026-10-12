@@ -171,7 +171,7 @@ func TestSessionIterationLimitAppliesToThatSessionOnly(t *testing.T) {
 	provider := &loopingToolCallProvider{}
 	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
 	defer cleanup()
-	al.setSessionIterationLimit(agent.ID, "limited", 2)
+	al.updateSessionRuntime(agent.ID, "limited", func(s *sessionRuntime) { s.maxIterations = 2 })
 
 	runTurn := func(sessionKey string) int {
 		t.Helper()

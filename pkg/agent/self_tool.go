@@ -4,12 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
-	"sort"
 	"strings"
 	"sync"
 
-	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
@@ -182,37 +179,21 @@ func (t *SelfTool) Execute(ctx context.Context, args map[string]any) *tools.Tool
 		log("BLOCKED " + key)
 		return tools.ErrorResult(err.Error())
 	}
+	if key == "model" {
+		log("READ_ONLY " + key)
+		return tools.ErrorResult("model cannot be changed directly through SelfTool; use model_preset")
+	}
 	if isSelfReadOnly(key) {
 		log("READ_ONLY " + key)
 		return tools.ErrorResult("property is read-only: " + key)
 	}
-	if key == "max_iterations" {
-		if _, err := selfInt(value); err != nil {
-			log("REJECTED type mismatch " + key)
-			return tools.ErrorResult("max_iterations must be an integer")
-		}
+	if isSelfWritableRuntimeKey(key) {
 		if err := t.runtime.Set(ctx, key, value); err != nil {
 			log("REJECTED " + key)
 			return tools.ErrorResult(err.Error())
 		}
 		log("set " + key)
-		return tools.NewToolResult("max_iterations updated")
-	}
-	if isSelfRuntimeKey(key) {
-		if err := t.runtime.Set(ctx, key, value); err != nil {
-			log("REJECTED " + key)
-			return tools.ErrorResult(err.Error())
-		}
-		log("set " + key)
-		if key == "model_preset" {
-			return tools.NewToolResult(
-				fmt.Sprintf(
-					"model preset for this session will change to %q starting next turn",
-					value,
-				),
-			)
-		}
-		return tools.NewToolResult(key + " updated")
+		return tools.NewToolResult(selfSetMessage(key, value))
 	}
 	if isSelfRuntimeRoot(key) {
 		log("REJECTED invalid runtime path " + key)
@@ -249,163 +230,6 @@ func (t *SelfTool) Execute(ctx context.Context, args map[string]any) *tools.Tool
 	}
 	log("set scratchpad " + key)
 	return tools.NewToolResult("scratchpad updated: " + key)
-}
-
-type agentRuntimeControl struct {
-	agent *AgentInstance
-	cfg   *config.Config
-}
-
-func (c *agentRuntimeControl) Snapshot(ctx context.Context) map[string]any {
-	if c.agent == nil {
-		return map[string]any{}
-	}
-	agent := c.agent
-	maxIterations := agent.MaxIterations
-	contextWindow := agent.ContextWindow
-	if ts := turnStateFromContext(ctx); ts != nil && ts.agent != nil {
-		agent = ts.agent
-		maxIterations = ts.maxIterations()
-		contextWindow = ts.contextWindow()
-	} else {
-		mu := c.agent.modelStateMutex()
-		mu.RLock()
-		defer mu.RUnlock()
-	}
-	view := map[string]any{
-		"max_iterations":        maxIterations,
-		"context_window_tokens": contextWindow,
-		"model":                 agent.Model,
-		"model_preset":          agent.Model,
-		"workspace":             agent.Workspace,
-		"tool_names":            agent.Tools.List(),
-		"request":               requestSelfSnapshot(ctx),
-	}
-	if c.cfg != nil {
-		web := c.cfg.Tools.Web
-		presets := make([]string, 0, len(c.cfg.ModelList))
-		for _, model := range c.cfg.ModelList {
-			if model != nil && strings.TrimSpace(model.ModelName) != "" {
-				presets = append(presets, model.ModelName)
-			}
-		}
-		view["web_config"] = map[string]any{
-			"enabled": web.Enabled, "provider": web.Provider, "prefer_native": web.PreferNative,
-			"fetch_limit_bytes": web.FetchLimitBytes, "format": web.Format,
-		}
-		view["exec_config"] = map[string]any{
-			"enabled": c.cfg.Tools.Exec.Enabled, "allow_remote": c.cfg.Tools.Exec.AllowRemote,
-			"enable_deny_patterns": c.cfg.Tools.Exec.EnableDenyPatterns,
-			"timeout_seconds":      c.cfg.Tools.Exec.TimeoutSeconds,
-		}
-		view["model_presets"] = presets
-		view["config"] = redactedConfigSnapshot(c.cfg)
-	}
-	return view
-}
-
-func (c *agentRuntimeControl) Set(ctx context.Context, key string, value any) error {
-	switch key {
-	case "model":
-		preset, ok := value.(string)
-		if !ok || strings.TrimSpace(preset) == "" {
-			return fmt.Errorf("%s must be a non-empty string", key)
-		}
-		return fmt.Errorf("model cannot be changed directly through SelfTool; use model_preset")
-	case "model_preset":
-		preset, ok := value.(string)
-		if !ok || strings.TrimSpace(preset) == "" {
-			return fmt.Errorf("model_preset must be a non-empty string")
-		}
-		ts := turnStateFromContext(ctx)
-		al := AgentLoopFromContext(ctx)
-		if ts == nil || ts.agent == nil || al == nil {
-			return fmt.Errorf("session model changes require an active agent turn")
-		}
-		return al.setSessionModelPreset(ts.agentID, ts.sessionKey, ts.agent, preset)
-	case "context_window_tokens":
-		window, err := selfInt(value)
-		if err != nil {
-			return fmt.Errorf("context_window_tokens must be an integer: %w", err)
-		}
-		rule, _ := selfAccessRuleFor(key)
-		if window < rule.min || window > rule.max {
-			return selfValidationError(key, rule)
-		}
-		ts := turnStateFromContext(ctx)
-		al := AgentLoopFromContext(ctx)
-		if ts == nil || ts.agent == nil || al == nil {
-			return fmt.Errorf("session context window changes require an active agent turn")
-		}
-		if strings.TrimSpace(ts.sessionKey) == "" {
-			return fmt.Errorf("session context window changes require a session")
-		}
-		al.setSessionContextWindow(ts.agentID, ts.sessionKey, window)
-		ts.contextWindowOverride.Store(int64(window))
-		return nil
-	case "max_iterations":
-	default:
-		return fmt.Errorf(
-			"%s cannot be changed safely through SelfTool; use the agent command or configuration",
-			key,
-		)
-	}
-	iterations, err := selfInt(value)
-	if err != nil {
-		return fmt.Errorf("max_iterations must be an integer: %w", err)
-	}
-	if iterations < 1 || iterations > 100 {
-		return fmt.Errorf("max_iterations must be between 1 and 100")
-	}
-	ts := turnStateFromContext(ctx)
-	al := AgentLoopFromContext(ctx)
-	if ts == nil || al == nil {
-		return fmt.Errorf("session iteration limit changes require an active agent turn")
-	}
-	// Turns without a session key share the "" entry, so the limit would leak
-	// to every other keyless turn. model_preset has the same guard.
-	if strings.TrimSpace(ts.sessionKey) == "" {
-		return fmt.Errorf("session iteration limit changes require a session")
-	}
-	al.setSessionIterationLimit(ts.agentID, ts.sessionKey, iterations)
-	ts.maxIterationsOverride.Store(int64(iterations))
-	return nil
-}
-
-func (al *AgentLoop) setSessionIterationLimit(agentID, sessionKey string, limit int) {
-	al.sessionLimits.Store(sessionModelKey{agentID: agentID, sessionKey: sessionKey}, limit)
-}
-
-// sessionIterationLimit returns the max_iterations a session set, or 0 if none.
-func (al *AgentLoop) sessionIterationLimit(agentID, sessionKey string) int {
-	limit, _ := al.sessionLimits.Load(sessionModelKey{agentID: agentID, sessionKey: sessionKey})
-	value, _ := limit.(int)
-	return value
-}
-
-func (al *AgentLoop) setSessionContextWindow(agentID, sessionKey string, window int) {
-	al.sessionWindows.Store(sessionModelKey{agentID: agentID, sessionKey: sessionKey}, window)
-}
-
-// sessionContextWindow returns the context_window_tokens a session set, or 0 if none.
-func (al *AgentLoop) sessionContextWindow(agentID, sessionKey string) int {
-	window, _ := al.sessionWindows.Load(sessionModelKey{agentID: agentID, sessionKey: sessionKey})
-	value, _ := window.(int)
-	return value
-}
-
-func requestSelfSnapshot(ctx context.Context) map[string]any {
-	request := map[string]any{
-		"channel":   tools.ToolChannel(ctx),
-		"chat_id":   tools.ToolChatID(ctx),
-		"sender_id": "",
-	}
-	if ts := turnStateFromContext(ctx); ts != nil {
-		request["channel"] = ts.channel
-		request["chat_id"] = ts.chatID
-		request["sender_id"] = ts.opts.Dispatch.SenderID()
-	}
-	return request
 }
 
 func (t *SelfTool) sessionNotes(ctx context.Context) map[string]any {
@@ -458,8 +282,7 @@ func (t *SelfTool) ClearSession(agentID, sessionKey string) {
 func (al *AgentLoop) clearSessionRuntime(agent *AgentInstance, sessionKey string) {
 	key := sessionModelKey{agentID: agent.ID, sessionKey: sessionKey}
 	al.clearSessionModelOverride(key)
-	al.sessionLimits.Delete(key)
-	al.sessionWindows.Delete(key)
+	al.sessionRuntime.Delete(key)
 	if tool, ok := agent.Tools.Get("self"); ok {
 		if self, ok := tool.(*SelfTool); ok {
 			self.ClearSession(agent.ID, sessionKey)
@@ -491,176 +314,6 @@ func selfSessionFor(ctx context.Context) selfSession {
 
 func selfSessionID(ctx context.Context) string {
 	return selfSessionFor(ctx).session
-}
-
-func validateSelfPath(path string) error {
-	// Runtime keys are fixed and harmless; "context_window_tokens" would
-	// otherwise match the "token" credential filter.
-	if isSelfRuntimeKey(path) {
-		return nil
-	}
-	if selfPathDenied(path) || selfAccessLevelFor(path) == selfAccessBlocked {
-		return fmt.Errorf("access denied")
-	}
-	for _, part := range strings.Split(path, ".") {
-		if selfSensitiveName(part) {
-			return fmt.Errorf("access denied")
-		}
-	}
-	return nil
-}
-
-func isSelfReadOnly(path string) bool {
-	switch selfAccessLevelFor(path) {
-	case selfAccessBlocked, selfAccessReadOnly:
-		return true
-	default:
-		return false
-	}
-}
-
-func isSelfRuntimeKey(path string) bool {
-	switch path {
-	case "max_iterations", "context_window_tokens", "model", "model_preset":
-		return true
-	default:
-		return false
-	}
-}
-
-func isSelfRuntimeRoot(path string) bool {
-	switch strings.Split(path, ".")[0] {
-	case "max_iterations", "context_window_tokens", "model", "model_preset":
-		return true
-	default:
-		return false
-	}
-}
-
-func resolveSelfPath(view map[string]any, path string) (any, error) {
-	var current any = view
-	for _, part := range strings.Split(path, ".") {
-		mapping, ok := current.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("key not found: %s", path)
-		}
-		value, ok := mapping[part]
-		if !ok {
-			return nil, fmt.Errorf("key not found: %s", path)
-		}
-		current = value
-	}
-	return current, nil
-}
-
-func validateSelfJSON(value any, depth int) error {
-	if depth > 10 {
-		return fmt.Errorf("nesting too deep; maximum is 10 levels")
-	}
-	switch value := value.(type) {
-	case nil, string, bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, json.Number:
-		return nil
-	case float32:
-		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
-			return fmt.Errorf("value must be JSON-compatible")
-		}
-	case float64:
-		if math.IsNaN(value) || math.IsInf(value, 0) {
-			return fmt.Errorf("value must be JSON-compatible")
-		}
-	case []any:
-		for _, item := range value {
-			if err := validateSelfJSON(item, depth+1); err != nil {
-				return err
-			}
-		}
-	case map[string]any:
-		for _, item := range value {
-			if err := validateSelfJSON(item, depth+1); err != nil {
-				return err
-			}
-		}
-	default:
-		return fmt.Errorf("unsupported value type %T", value)
-	}
-	return nil
-}
-
-func validateSelfSensitiveKeys(value any) error {
-	switch value := value.(type) {
-	case []any:
-		for _, item := range value {
-			if err := validateSelfSensitiveKeys(item); err != nil {
-				return err
-			}
-		}
-	case map[string]any:
-		for key, item := range value {
-			if selfSensitiveName(strings.ToLower(key)) {
-				return fmt.Errorf("access denied")
-			}
-			if err := validateSelfSensitiveKeys(item); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func selfInt(value any) (int, error) {
-	switch value := value.(type) {
-	case int:
-		return value, nil
-	case float64:
-		if math.Trunc(value) == value && value >= float64(math.MinInt) && value <= float64(math.MaxInt) {
-			return int(value), nil
-		}
-	case json.Number:
-		if parsed, err := value.Int64(); err == nil {
-			return int(parsed), nil
-		}
-	}
-	return 0, fmt.Errorf("expected a whole number")
-}
-
-func formatSelfValue(value any) string {
-	switch value := value.(type) {
-	case nil:
-		return "null"
-	case string:
-		return value
-	case map[string]any:
-		if len(value) == 0 {
-			return "{}"
-		}
-		encoded, _ := json.Marshal(value)
-		if len(value) <= 5 && len(encoded) <= 200 {
-			return string(encoded)
-		}
-		keys := make([]string, 0, len(value))
-		for key := range value {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		if len(keys) > 15 {
-			keys = keys[:15]
-		}
-		return "{" + strings.Join(keys, ", ") + ", ...}"
-	case []any:
-		if len(value) > 20 {
-			return fmt.Sprintf("[%d items]", len(value))
-		}
-		encoded, _ := json.Marshal(value)
-		return string(encoded)
-	case []string:
-		if len(value) > 20 {
-			return fmt.Sprintf("[%d items]", len(value))
-		}
-		encoded, _ := json.Marshal(value)
-		return string(encoded)
-	default:
-		return fmt.Sprint(value)
-	}
 }
 
 func cloneSelfMap(value map[string]any) map[string]any {

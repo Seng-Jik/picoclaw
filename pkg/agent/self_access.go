@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/sipeed/picoclaw/pkg/config"
 )
 
 // selfAccessLevel is the isolation level applied to a self-tool path.
@@ -223,4 +226,120 @@ func selfSensitiveName(name string) bool {
 
 func selfValidationError(key string, rule selfAccessRule) error {
 	return fmt.Errorf("%s must be between %d and %d", key, rule.min, rule.max)
+}
+
+// selfRuntimeRoots are the writable keys whose sub-paths must be rejected
+// rather than treated as scratchpad notes.
+var selfRuntimeRoots = map[string]bool{
+	"max_iterations":        true,
+	"context_window_tokens": true,
+	"model":                 true,
+	"model_preset":          true,
+}
+
+// validateSelfPath checks a read/write target. Blank, traversal, shadow
+// (underscore-prefixed) and BLOCKED paths are denied, as are paths containing a
+// credential-like segment. context_window_tokens is exempt because it is in
+// selfNonSensitiveKeys.
+func validateSelfPath(path string) error {
+	if selfPathDenied(path) || selfAccessLevelFor(path) == selfAccessBlocked {
+		return fmt.Errorf("access denied")
+	}
+	for _, part := range strings.Split(path, ".") {
+		if selfSensitiveName(part) {
+			return fmt.Errorf("access denied")
+		}
+	}
+	return nil
+}
+
+func isSelfReadOnly(path string) bool {
+	switch selfAccessLevelFor(path) {
+	case selfAccessBlocked, selfAccessReadOnly:
+		return true
+	default:
+		return false
+	}
+}
+
+// isSelfWritableRuntimeKey reports whether path is exactly a RESTRICTED runtime
+// key. Sub-paths (for example max_iterations.x) are not writable.
+func isSelfWritableRuntimeKey(path string) bool {
+	return selfAccessLevelFor(path) == selfAccessRestricted && !strings.Contains(path, ".")
+}
+
+func isSelfRuntimeRoot(path string) bool {
+	return selfRuntimeRoots[strings.Split(path, ".")[0]]
+}
+
+// selfRedactedValue marks a configuration value that the self tool hides.
+const selfRedactedValue = "[REDACTED]"
+
+// redactedConfigSnapshot serializes the full configuration to a JSON-safe map
+// with credentials removed. SecureString/SecureStrings fields are dropped by
+// their own JSON marshaling; remaining plaintext secrets are replaced using the
+// sensitive-name heuristic, and sections at the BLOCKED access level are
+// omitted entirely.
+func redactedConfigSnapshot(cfg *config.Config) map[string]any {
+	if cfg == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(cfg)
+	if err != nil {
+		return map[string]any{"error": "configuration is not serializable"}
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(encoded, &raw); err != nil {
+		return map[string]any{"error": "configuration is not serializable"}
+	}
+	redacted, _ := redactSelfConfigValue("config", raw).(map[string]any)
+	return redacted
+}
+
+// redactSelfConfigValue walks a decoded config, applying the access table and
+// the sensitive-name heuristic. path is the snapshot path of value.
+func redactSelfConfigValue(path string, value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			child := key
+			if path != "" {
+				child = path + "." + key
+			}
+			if selfAccessLevelFor(child) == selfAccessBlocked {
+				continue
+			}
+			if selfSensitiveName(key) {
+				out[key] = selfRedactedValue
+				continue
+			}
+			out[key] = redactSelfConfigValue(child, item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = redactSelfConfigValue(path, item)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func resolveSelfPath(view map[string]any, path string) (any, error) {
+	var current any = view
+	for _, part := range strings.Split(path, ".") {
+		mapping, ok := current.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("key not found: %s", path)
+		}
+		value, ok := mapping[part]
+		if !ok {
+			return nil, fmt.Errorf("key not found: %s", path)
+		}
+		current = value
+	}
+	return current, nil
 }
