@@ -400,12 +400,34 @@ func (cs *CronService) notify() {
 
 func (cs *CronService) recomputeNextRuns() {
 	now := time.Now().UnixMilli()
+	kept := cs.store.Jobs[:0]
 	for i := range cs.store.Jobs {
 		job := &cs.store.Jobs[i]
+
+		if job.Enabled && job.Schedule.Kind == "at" &&
+			(job.Schedule.AtMS == nil || *job.Schedule.AtMS <= now) {
+			// The one-time schedule elapsed while the service was down; it can
+			// never fire again. Finalize it instead of leaving an enabled job
+			// with a nil next run that the scheduler will ignore forever.
+			if job.DeleteAfterRun {
+				log.Printf(
+					"[cron] dropping one-time job '%s' (id: %s) whose scheduled time elapsed before startup",
+					job.Name, job.ID,
+				)
+				continue
+			}
+			job.Enabled = false
+			job.State.NextRunAtMS = nil
+			kept = append(kept, *job)
+			continue
+		}
+
 		if job.Enabled {
 			job.State.NextRunAtMS = cs.computeNextRun(&job.Schedule, now)
 		}
+		kept = append(kept, *job)
 	}
+	cs.store.Jobs = kept
 }
 
 func (cs *CronService) getNextWakeMS() *int64 {

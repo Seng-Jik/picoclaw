@@ -508,6 +508,35 @@ func TestCronService_SetOnJobConcurrentWithExecution(t *testing.T) {
 	wg.Wait()
 }
 
+func TestCronService_StartupFinalizesExpiredOneTimeJobs(t *testing.T) {
+	cs, path := setupService(nil)
+	defer os.Remove(path)
+
+	now := time.Now().UnixMilli()
+	past := now - 3_600_000
+	every := int64(60_000)
+
+	expired, err := cs.AddJob("Expired", CronSchedule{Kind: "at", AtMS: &past}, "m", "cli", "direct")
+	if err != nil {
+		t.Fatalf("AddJob failed: %v", err)
+	}
+	if _, err := cs.AddJob("Recurring", CronSchedule{Kind: "every", EveryMS: &every}, "m", "cli", "direct"); err != nil {
+		t.Fatalf("AddJob failed: %v", err)
+	}
+
+	cs.recomputeNextRuns()
+
+	jobs := cs.ListJobs(true)
+	for _, job := range jobs {
+		if job.ID == expired.ID {
+			t.Fatalf("expired one-time job was neither dropped nor finalized: %+v", job)
+		}
+	}
+	if len(jobs) != 1 || jobs[0].Name != "Recurring" || jobs[0].State.NextRunAtMS == nil {
+		t.Fatalf("recurring job not preserved correctly: %+v", jobs)
+	}
+}
+
 func TestCronService_ConcurrentAccess(t *testing.T) {
 	cs, path := setupService(nil)
 	defer os.Remove(path)
