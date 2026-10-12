@@ -44,6 +44,7 @@ type HeartbeatService struct {
 	enabled   bool
 	mu        sync.RWMutex
 	stopChan  chan struct{}
+	firstRun  *time.Timer
 }
 
 // NewHeartbeatService creates a new heartbeat service
@@ -95,7 +96,19 @@ func (hs *HeartbeatService) Start() error {
 	}
 
 	hs.stopChan = make(chan struct{})
-	go hs.runLoop(hs.stopChan)
+	stopChan := hs.stopChan
+
+	// Run first heartbeat after a short initial delay. The timer is armed
+	// while holding the lock so Stop can always cancel it.
+	hs.firstRun = time.AfterFunc(time.Second, func() {
+		select {
+		case <-stopChan:
+			return
+		default:
+			hs.executeHeartbeat()
+		}
+	})
+	go hs.runLoop(stopChan)
 
 	logger.InfoCF("heartbeat", "Heartbeat service started", map[string]any{
 		"interval_minutes": hs.interval.Minutes(),
@@ -116,6 +129,10 @@ func (hs *HeartbeatService) Stop() {
 	logger.InfoC("heartbeat", "Stopping heartbeat service")
 	close(hs.stopChan)
 	hs.stopChan = nil
+	if hs.firstRun != nil {
+		hs.firstRun.Stop()
+		hs.firstRun = nil
+	}
 }
 
 // IsRunning returns whether the service is running
@@ -129,11 +146,6 @@ func (hs *HeartbeatService) IsRunning() bool {
 func (hs *HeartbeatService) runLoop(stopChan chan struct{}) {
 	ticker := time.NewTicker(hs.interval)
 	defer ticker.Stop()
-
-	// Run first heartbeat after initial delay
-	time.AfterFunc(time.Second, func() {
-		hs.executeHeartbeat()
-	})
 
 	for {
 		select {
