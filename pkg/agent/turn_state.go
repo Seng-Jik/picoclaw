@@ -262,6 +262,10 @@ type turnState struct {
 	loopDetectionHistory []uint64
 	loopDetectionNext    int
 	loopDetectionConfig  config.LoopDetectionConfig
+
+	// Latest explanation shown in compact tool feedback (channels that cannot
+	// edit messages), used to avoid repeating it on every tool call.
+	lastToolFeedbackExplanation string
 }
 
 // =============================================================================
@@ -962,4 +966,19 @@ func turnStateFromContext(ctx context.Context) *turnState {
 // TurnStateFromContext retrieves turnState from context (exported for tools)
 func TurnStateFromContext(ctx context.Context) *turnState {
 	return turnStateFromContext(ctx)
+}
+
+// repeatsToolFeedbackExplanation records explanation as the latest tool
+// feedback explanation of this turn and reports whether it equals the previous
+// one. Empty explanations are ignored.
+func (ts *turnState) repeatsToolFeedbackExplanation(explanation string) bool {
+	explanation = strings.TrimSpace(explanation)
+	if explanation == "" {
+		return false
+	}
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	repeated := explanation == ts.lastToolFeedbackExplanation
+	ts.lastToolFeedbackExplanation = explanation
+	return repeated
 }

@@ -932,6 +932,7 @@ func (c *WeixinChannel) sendMessageItem(
 		}
 		return &apiError{op: "sendmessage", ret: resp.Ret, errcode: resp.Errcode, errmsg: resp.Errmsg}
 	}
+	c.replies.recordSent(toUserID)
 	return nil
 }
 
