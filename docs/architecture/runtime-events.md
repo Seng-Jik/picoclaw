@@ -126,7 +126,7 @@ The table below lists the current runtime event kinds, when they are emitted, an
 | Event | Trigger | Details |
 | ----- | ------- | ------- |
 | `bus.publish.failed` | Publishing inbound, outbound, media, audio, or voice-control data fails, or required context is missing. | `stream`, `error`; scope is derived from message context when possible |
-| `bus.message.dropped` | A message is dropped because the stream queue stays full past its drop budget. | `stream`, `reason`, `wait_ms`, `queue_depth`, `queue_capacity`, `dropped_total`; severity is `warn` |
+| `bus.message.dropped` | A publish exceeds its backpressure wait budget while the queue is full, so the message is dropped. Audio chunks use a 150 ms default budget (overridable via `SetBackpressureTimeout`). | `stream`, `reason`, `wait_ms`, `queue_depth`, `queue_capacity`, `dropped_total`; severity is `warn`; scope is derived from the message context when possible |
 | `bus.close.started` | Message bus shutdown begins. | `drained` is usually `0` |
 | `bus.close.drained` | Shutdown waits for buffered messages to drain and at least one buffered message was drained. | `drained` |
 | `bus.close.completed` | Message bus shutdown completes. | `drained` |
@@ -210,7 +210,7 @@ Runtime event kinds are defined in `pkg/events/kind.go`. Event logging can selec
 
 - `agent.*`: agent turn, LLM, tool, context, steering, interrupt, subturn, and error events.
 - `channel.*`: channel lifecycle, webhook registration, outbound queued/sent/failed, and rate limiting.
-- `bus.*`: publish failures, backpressure drops, and close lifecycle.
+- `bus.*`: publish failures, backpressure message drops, and close lifecycle.
 - `gateway.*`: start, ready, shutdown, and reload lifecycle.
 - `mcp.*`: MCP server connection, tool discovery, and tool call events.
 
