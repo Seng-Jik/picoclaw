@@ -107,6 +107,22 @@ func TestMCPTool_Name(t *testing.T) {
 	}
 }
 
+// TestMCPTool_Name_DistinguishesCaseOnlyServers verifies that servers whose
+// names differ only by case do not collapse to the same tool identifier.
+func TestMCPTool_Name_DistinguishesCaseOnlyServers(t *testing.T) {
+	manager := &MockMCPManager{}
+	upper := NewMCPTool(manager, "GitHub", &mcp.Tool{Name: "search"})
+	lower := NewMCPTool(manager, "github", &mcp.Tool{Name: "search"})
+
+	if upper.Name() == lower.Name() {
+		t.Fatalf("case-only servers produced the same tool name %q", upper.Name())
+	}
+	if !strings.HasPrefix(upper.Name(), "mcp_github_search") ||
+		!strings.HasPrefix(lower.Name(), "mcp_github_search") {
+		t.Fatalf("unexpected names: %q, %q", upper.Name(), lower.Name())
+	}
+}
+
 func TestMCPTool_PromptMetadata(t *testing.T) {
 	manager := &MockMCPManager{}
 	tool := NewMCPTool(manager, "GitHub Server", &mcp.Tool{Name: "create_issue"})

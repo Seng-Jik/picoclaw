@@ -139,16 +139,19 @@ func sanitizeIdentifierComponent(s string) string {
 // The total length is capped at 64 characters (OpenAI-compatible API limit).
 // A short hash of the original (unsanitized) server and tool names is appended
 // whenever sanitization is lossy or the name is truncated, ensuring that two
-// names which differ only in disallowed characters remain distinct after sanitization.
+// names which differ only in disallowed characters or in case remain distinct
+// after sanitization.
 func (t *MCPTool) Name() string {
 	// Prefix with server name to avoid conflicts, and sanitize components
 	sanitizedServer := sanitizeIdentifierComponent(t.serverName)
 	sanitizedTool := sanitizeIdentifierComponent(t.tool.Name)
 	full := fmt.Sprintf("mcp_%s_%s", sanitizedServer, sanitizedTool)
 
-	// Check if sanitization was lossless (only lowercasing, no char replacement/truncation)
-	lossless := strings.ToLower(t.serverName) == sanitizedServer &&
-		strings.ToLower(t.tool.Name) == sanitizedTool
+	// Check if sanitization was lossless. Case folding counts as lossy:
+	// two servers (or tools) whose names differ only by case would otherwise
+	// produce the same identifier and silently overwrite each other in the
+	// registry.
+	lossless := t.serverName == sanitizedServer && t.tool.Name == sanitizedTool
 
 	const maxTotal = 64
 	if lossless && len(full) <= maxTotal {
