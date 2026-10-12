@@ -87,6 +87,15 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		},
 	)
 
+	// Discovery tools stay unlocked for a configured number of conversational
+	// turns. Tick once per turn, at the start, so a tool discovered during a
+	// turn remains callable for that entire turn (including later tool-loop
+	// iterations). Ticking per iteration would decrement it before the model
+	// could use it, making ttl=1 unusable.
+	if ts.agent != nil && ts.agent.Tools != nil {
+		ts.agent.Tools.TickTTL()
+	}
+
 	// SetupTurn extracts the one-time initialization phase.
 	exec, err := pipeline.SetupTurn(turnCtx, ts)
 	if err != nil {
