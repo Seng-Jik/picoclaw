@@ -681,7 +681,7 @@ func (hm *HookManager) runRuntimeObserver(
 		logger.WarnCF("hooks", "Runtime event observer timed out", map[string]any{
 			"hook":       name,
 			"event":      evt.Kind.String(),
-			"timeout_ms": hm.observerTimeout.Milliseconds(),
+			"timeout_ms": timeout.Milliseconds(),
 		})
 	}
 }
