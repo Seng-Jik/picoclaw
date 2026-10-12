@@ -2516,3 +2516,60 @@ func TestSpawnSubTurn_ParentSlotLentToOneChildAtATime(t *testing.T) {
 		t.Fatalf("expected only the parent's slot to be held, got %d", got)
 	}
 }
+
+// signalProvider closes called on the first Chat call, then delegates to inner.
+type signalProvider struct {
+	inner  providers.LLMProvider
+	called chan struct{}
+	once   sync.Once
+}
+
+func (p *signalProvider) GetDefaultModel() string { return p.inner.GetDefaultModel() }
+
+func (p *signalProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	defs []providers.ToolDefinition,
+	model string,
+	options map[string]any,
+) (*providers.LLMResponse, error) {
+	p.once.Do(func() { close(p.called) })
+	return p.inner.Chat(ctx, messages, defs, model, options)
+}
+
+// TestSpawnSubTurn_ReleasesSlotBeforeAsyncDelivery verifies that the slot is free while an async result
+// is still waiting for room in pendingResults, including when runTurn panicked.
+func TestSpawnSubTurn_ReleasesSlotBeforeAsyncDelivery(t *testing.T) {
+	cases := []struct {
+		name  string
+		inner providers.LLMProvider
+	}{
+		{"success", &simpleMockProviderAPI{response: "ok"}},
+		{"panic", &panicMockProvider{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &signalProvider{inner: tc.inner, called: make(chan struct{})}
+			al := newLimitTestLoop(t, provider, 1)
+			parent := newRootTurnState("root-delivery")
+			parent.pendingResults = make(chan *tools.ToolResult, 1)
+			parent.pendingResults <- &tools.ToolResult{} // full: delivery blocks until drained
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				_, _ = spawnSubTurn(context.Background(), al, parent, SubTurnConfig{Model: "gpt-4o-mini", Async: true})
+			}()
+
+			<-provider.called
+			time.Sleep(100 * time.Millisecond) // let the turn reach the blocked delivery
+			held := len(al.subTurnSem)
+
+			<-parent.pendingResults // unblock delivery
+			<-done
+			if held != 0 {
+				t.Fatalf("slot still held while the async result was waiting for delivery (%s)", tc.name)
+			}
+		})
+	}
+}

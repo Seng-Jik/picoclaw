@@ -469,6 +469,14 @@ func spawnSubTurn(
 
 	// 7. Defer cleanup: deliver result (for async), emit End event, and recover from panics
 	defer func() {
+		// Release the concurrency slot before the cleanup phase, on both the normal and the
+		// panic path. This prevents a deadlock where:
+		// - All slots are held by sub-turns in their cleanup phase
+		// - Cleanup blocks on a full pendingResults channel
+		// - The parent goroutine is blocked waiting for a slot
+		// - The parent cannot consume pendingResults because it is blocked on the slot
+		releaseSlot()
+
 		if r := recover(); r != nil {
 			logger.RecoverPanicNoExit(r)
 			err = fmt.Errorf("subturn panicked: %v", r)
@@ -501,14 +509,6 @@ func spawnSubTurn(
 	// 8. Execute sub-turn via the real agent loop.
 	pipeline := NewPipeline(al)
 	turnRes, turnErr := al.runTurn(childCtx, childTS, pipeline)
-
-	// Release the concurrency slot immediately after runTurn completes,
-	// before the cleanup defer runs. This prevents a deadlock where:
-	// - All slots are held by sub-turns in their cleanup phase
-	// - Cleanup blocks on a full pendingResults channel
-	// - The parent goroutine is blocked waiting for a slot
-	// - The parent cannot consume pendingResults because it is blocked on the slot
-	releaseSlot()
 
 	// Convert turnResult to tools.ToolResult
 	if turnErr != nil {
