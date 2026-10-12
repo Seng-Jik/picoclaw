@@ -54,26 +54,41 @@ func (c *agentRuntimeControl) Snapshot(ctx context.Context) map[string]any {
 	if c.agent == nil {
 		return map[string]any{}
 	}
-	agent := c.agent
-	maxIterations := agent.MaxIterations
-	contextWindow := agent.ContextWindow
+	base := c.agent
+	baseMu := base.modelStateMutex()
+	baseMu.RLock()
+	defaultMaxIterations := base.MaxIterations
+	defaultContextWindow := base.ContextWindow
+	defaultModel := base.Model
+	baseMu.RUnlock()
+
+	agent := base
+	maxIterations := defaultMaxIterations
+	contextWindow := defaultContextWindow
+	effectiveModel := defaultModel
 	if ts := turnStateFromContext(ctx); ts != nil && ts.agent != nil {
 		agent = ts.agent
 		maxIterations = ts.maxIterations()
 		contextWindow = ts.contextWindow()
-	} else {
-		mu := c.agent.modelStateMutex()
-		mu.RLock()
-		defer mu.RUnlock()
+		effectiveModel = ts.agent.Model
 	}
 	view := map[string]any{
 		"max_iterations":        maxIterations,
 		"context_window_tokens": contextWindow,
-		"model":                 agent.Model,
-		"model_preset":          agent.Model,
+		"model":                 effectiveModel,
+		"model_preset":          effectiveModel,
 		"workspace":             agent.Workspace,
 		"tool_names":            agent.Tools.List(),
 		"request":               requestSelfSnapshot(ctx),
+		"defaults": map[string]any{
+			"max_iterations":        defaultMaxIterations,
+			"context_window_tokens": defaultContextWindow,
+			"model":                 defaultModel,
+		},
+		"session_overrides": selfSessionOverrides(
+			defaultMaxIterations, defaultContextWindow, defaultModel,
+			maxIterations, contextWindow, effectiveModel,
+		),
 	}
 	if c.cfg != nil {
 		view["web_config"] = selfWebSnapshot(c.cfg)
@@ -82,6 +97,25 @@ func (c *agentRuntimeControl) Snapshot(ctx context.Context) map[string]any {
 		view["config"] = redactedConfigSnapshot(c.cfg)
 	}
 	return view
+}
+
+// selfSessionOverrides reports which session-scoped values differ from the
+// configured agent defaults. Only overridden keys are included.
+func selfSessionOverrides(
+	defaultMaxIterations, defaultContextWindow int, defaultModel string,
+	maxIterations, contextWindow int, model string,
+) map[string]any {
+	overrides := map[string]any{}
+	if maxIterations != defaultMaxIterations {
+		overrides["max_iterations"] = maxIterations
+	}
+	if contextWindow != defaultContextWindow {
+		overrides["context_window_tokens"] = contextWindow
+	}
+	if model != defaultModel {
+		overrides["model_preset"] = model
+	}
+	return overrides
 }
 
 func (c *agentRuntimeControl) Set(ctx context.Context, key string, value any) error {
@@ -97,6 +131,40 @@ func (c *agentRuntimeControl) Set(ctx context.Context, key string, value any) er
 			"%s cannot be changed safely through SelfTool; use the agent command or configuration",
 			key,
 		)
+	}
+}
+
+func (c *agentRuntimeControl) Reset(ctx context.Context, key string) error {
+	switch key {
+	case "model_preset":
+		ts, al, err := selfSessionTurn(ctx, "model changes")
+		if err != nil {
+			return err
+		}
+		al.clearSessionModelOverride(sessionModelKey{agentID: ts.agentID, sessionKey: ts.sessionKey})
+		return nil
+	case "context_window_tokens":
+		ts, al, err := selfSessionTurn(ctx, "context window changes")
+		if err != nil {
+			return err
+		}
+		al.updateSessionRuntime(ts.agentID, ts.sessionKey, func(s *sessionRuntime) {
+			s.contextWindow = 0
+		})
+		ts.contextWindowOverride.Store(0)
+		return nil
+	case "max_iterations":
+		ts, al, err := selfSessionTurn(ctx, "iteration limit changes")
+		if err != nil {
+			return err
+		}
+		al.updateSessionRuntime(ts.agentID, ts.sessionKey, func(s *sessionRuntime) {
+			s.maxIterations = 0
+		})
+		ts.maxIterationsOverride.Store(0)
+		return nil
+	default:
+		return fmt.Errorf("%s is not a resettable session property", key)
 	}
 }
 

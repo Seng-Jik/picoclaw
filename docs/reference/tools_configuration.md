@@ -50,6 +50,32 @@ makes them: `max_iterations` (1–100, effective immediately),
 `model_preset` (a configured model, effective from the next turn). Session
 changes are lost on restart.
 
+The tool exposes these actions:
+
+- `check` (read-only): show the runtime snapshot and scratchpad, or inspect one
+  dot path such as `web_config.enabled`.
+- `list` (read-only): enumerate the children of a snapshot node with their access
+  level and numeric range; omit the key to list the snapshot root.
+- `schema` (read-only): print every access rule (path, level, range) the tool
+  enforces, so the agent can learn what it may read and write.
+- `explain` (read-only): describe one path, its access level, whether it is
+  writable, and its current value when readable.
+- `diff` (read-only): compare the session overrides with the configured agent
+  defaults.
+- `history` (read-only): list the recent session writes, newest last.
+- `logs` (read-only): tail PicoClaw's own log files (the gateway log and its
+  rotated archives, or the file selected by `PICOCLAW_LOG_FILE`). The optional
+  key filters by level name (`debug`, `info`, `warn`, `error`, `fatal`) or by
+  substring; credential-like values are redacted and only the last 200 matching
+  lines are returned. It reports an error when file logging is off.
+- `set` (requires `allow_set`): change `max_iterations`, `context_window_tokens`,
+  `model_preset`, or store a scratchpad note.
+- `reset` (requires `allow_set`): drop one session override so the configured
+  value applies again.
+- `undo` (requires `allow_set`): revert the most recent session write. The last
+  20 writes per session are kept in memory and cleared by `/clear`.
+
+
 ```json
 {
   "tools": {

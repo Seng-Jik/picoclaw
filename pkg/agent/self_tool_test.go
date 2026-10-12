@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -16,11 +18,16 @@ type selfToolTestRuntime struct {
 	view     map[string]any
 	setKey   string
 	setValue any
+	resetKey string
 }
 
 func (r *selfToolTestRuntime) Snapshot(context.Context) map[string]any { return r.view }
 func (r *selfToolTestRuntime) Set(_ context.Context, key string, value any) error {
 	r.setKey, r.setValue = key, value
+	return nil
+}
+func (r *selfToolTestRuntime) Reset(_ context.Context, key string) error {
+	r.resetKey = key
 	return nil
 }
 
@@ -44,7 +51,7 @@ func TestSelfToolDescriptionAndParameters(t *testing.T) {
 	readOnly := NewSelfTool(nil, false)
 	for _, want := range []string{
 		"web_config.enabled", "request.channel", "max_iterations (integer 1–100)",
-		"64 keys", "10 levels", "READ-ONLY MODE: set is disabled.",
+		"64 keys", "10 levels", "READ-ONLY MODE: set, reset and undo are disabled.",
 	} {
 		if !strings.Contains(readOnly.Description(), want) {
 			t.Errorf("read-only description missing %q", want)
@@ -57,8 +64,9 @@ func TestSelfToolDescriptionAndParameters(t *testing.T) {
 	}
 	parameters := readWrite.Parameters()["properties"].(map[string]any)
 	action := parameters["action"].(map[string]any)
-	if got, ok := action["enum"].([]string); !ok || len(got) != 2 || got[0] != "check" || got[1] != "set" {
-		t.Errorf("action enum = %#v, want [check set]", action["enum"])
+	if got, ok := action["enum"].([]string); !ok || len(got) != 10 || got[0] != "check" || got[1] != "list" ||
+		got[9] != "undo" {
+		t.Errorf("action enum = %#v, want ten actions starting check/list and ending undo", action["enum"])
 	}
 	for _, name := range []string{"action", "key", "value"} {
 		if _, ok := parameters[name].(map[string]any)["description"].(string); !ok {
@@ -501,5 +509,272 @@ func TestSelfToolExposesRedactedConfigReadOnly(t *testing.T) {
 	}
 	if result := runSelfTool(tool, ctx, "set", "config.voice.elevenlabs_api_key", "x", true); !result.IsError {
 		t.Fatal("set on a config path was accepted")
+	}
+}
+
+func selfReadOnlyRuntime() *selfToolTestRuntime {
+	return &selfToolTestRuntime{view: map[string]any{
+		"max_iterations":        20,
+		"context_window_tokens": 32768,
+		"model":                 "local",
+		"model_preset":          "local",
+		"config":                map[string]any{"version": "1", "hooks": map[string]any{"x": 1}},
+		"web_config":            map[string]any{"provider": "duckduckgo", "format": "markdown"},
+		"defaults": map[string]any{
+			"max_iterations":        20,
+			"context_window_tokens": 32768,
+			"model":                 "local",
+		},
+		"session_overrides": map[string]any{"max_iterations": 35},
+	}}
+}
+
+func TestSelfToolListChildrenCarryAccessAndRange(t *testing.T) {
+	tool := NewSelfTool(selfReadOnlyRuntime(), false)
+	ctx := selfTestContext("session-1")
+
+	root := runSelfTool(tool, ctx, "list", "", nil, false)
+	if root.IsError {
+		t.Fatalf("list root: %s", root.ForLLM)
+	}
+	var rootEntries map[string]map[string]any
+	if err := json.Unmarshal([]byte(root.ForLLM), &rootEntries); err != nil {
+		t.Fatalf("list root is not JSON: %v\n%s", err, root.ForLLM)
+	}
+	if got := rootEntries["max_iterations"]["access"]; got != "RESTRICTED" {
+		t.Errorf("max_iterations access = %v, want RESTRICTED", got)
+	}
+	if got := rootEntries["max_iterations"]["range"]; got != "1-100" {
+		t.Errorf("max_iterations range = %v, want 1-100", got)
+	}
+	if got := rootEntries["model"]["access"]; got != "READ_ONLY" {
+		t.Errorf("model access = %v, want READ_ONLY", got)
+	}
+
+	web := runSelfTool(tool, ctx, "list", "web_config", nil, false)
+	if web.IsError {
+		t.Fatalf("list web_config: %s", web.ForLLM)
+	}
+	var webEntries map[string]map[string]any
+	if err := json.Unmarshal([]byte(web.ForLLM), &webEntries); err != nil {
+		t.Fatalf("list web_config is not JSON: %v\n%s", err, web.ForLLM)
+	}
+	if got := webEntries["provider"]["access"]; got != "READ_ONLY" {
+		t.Errorf("web_config.provider access = %v, want READ_ONLY", got)
+	}
+}
+
+func TestSelfToolSchemaListsRules(t *testing.T) {
+	tool := NewSelfTool(selfReadOnlyRuntime(), false)
+	ctx := selfTestContext("session-1")
+	result := runSelfTool(tool, ctx, "schema", "", nil, false)
+	if result.IsError {
+		t.Fatalf("schema: %s", result.ForLLM)
+	}
+	var rules []map[string]any
+	if err := json.Unmarshal([]byte(result.ForLLM), &rules); err != nil {
+		t.Fatalf("schema is not JSON: %v\n%s", err, result.ForLLM)
+	}
+	byPath := map[string]map[string]any{}
+	for _, rule := range rules {
+		path, _ := rule["path"].(string)
+		byPath[path] = rule
+	}
+	if got := byPath["max_iterations"]["range"]; got != "1-100" {
+		t.Errorf("schema max_iterations range = %v, want 1-100", got)
+	}
+	if got := byPath["config.evolution"]["access"]; got != "BLOCKED" {
+		t.Errorf("schema config.evolution access = %v, want BLOCKED", got)
+	}
+	if got := byPath["model"]["access"]; got != "READ_ONLY" {
+		t.Errorf("schema model access = %v, want READ_ONLY", got)
+	}
+}
+
+func TestSelfToolExplainDescribesPath(t *testing.T) {
+	tool := NewSelfTool(selfReadOnlyRuntime(), false)
+	ctx := selfTestContext("session-1")
+
+	result := runSelfTool(tool, ctx, "explain", "max_iterations", nil, false)
+	if result.IsError {
+		t.Fatalf("explain max_iterations: %s", result.ForLLM)
+	}
+	var info map[string]any
+	if err := json.Unmarshal([]byte(result.ForLLM), &info); err != nil {
+		t.Fatalf("explain is not JSON: %v\n%s", err, result.ForLLM)
+	}
+	if info["access"] != "RESTRICTED" || info["writable"] != true || info["range"] != "1-100" {
+		t.Errorf("explain max_iterations = %v", info)
+	}
+	if info["value"] != float64(20) {
+		t.Errorf("explain max_iterations value = %v, want 20", info["value"])
+	}
+
+	model := runSelfTool(tool, ctx, "explain", "model", nil, false)
+	var modelInfo map[string]any
+	if err := json.Unmarshal([]byte(model.ForLLM), &modelInfo); err != nil {
+		t.Fatalf("explain model is not JSON: %v", err)
+	}
+	if modelInfo["writable"] != false {
+		t.Errorf("explain model writable = %v, want false", modelInfo["writable"])
+	}
+
+	blocked := runSelfTool(tool, ctx, "explain", "config.hooks", nil, false)
+	var blockedInfo map[string]any
+	if err := json.Unmarshal([]byte(blocked.ForLLM), &blockedInfo); err != nil {
+		t.Fatalf("explain config.hooks is not JSON: %v", err)
+	}
+	if blockedInfo["access"] != "BLOCKED" {
+		t.Errorf("explain config.hooks access = %v, want BLOCKED", blockedInfo["access"])
+	}
+	if _, leaked := blockedInfo["value"]; leaked {
+		t.Errorf("explain config.hooks leaked a value: %v", blockedInfo)
+	}
+}
+
+func TestSelfToolDiffComparesOverridesWithDefaults(t *testing.T) {
+	tool := NewSelfTool(selfReadOnlyRuntime(), false)
+	ctx := selfTestContext("session-1")
+	result := runSelfTool(tool, ctx, "diff", "", nil, false)
+	if result.IsError {
+		t.Fatalf("diff: %s", result.ForLLM)
+	}
+	var diff map[string]map[string]any
+	if err := json.Unmarshal([]byte(result.ForLLM), &diff); err != nil {
+		t.Fatalf("diff is not JSON: %v\n%s", err, result.ForLLM)
+	}
+	if diff["max_iterations"]["default"] != float64(20) || diff["max_iterations"]["session"] != float64(35) {
+		t.Errorf("diff max_iterations = %v", diff["max_iterations"])
+	}
+
+	clean := NewSelfTool(&selfToolTestRuntime{view: map[string]any{
+		"defaults":          map[string]any{"max_iterations": 20},
+		"session_overrides": map[string]any{},
+	}}, false)
+	if got := runSelfTool(clean, ctx, "diff", "", nil, false).ForLLM; !strings.Contains(got, "no session overrides") {
+		t.Errorf("clean diff = %q, want a no-overrides message", got)
+	}
+}
+
+func TestSelfToolReadOnlyActionsAllowedWithoutAllowSet(t *testing.T) {
+	tool := NewSelfTool(selfReadOnlyRuntime(), false)
+	ctx := selfTestContext("session-1")
+	for _, action := range []string{"list", "schema", "explain", "diff", "history"} {
+		key := ""
+		if action == "explain" {
+			key = "model"
+		}
+		if result := runSelfTool(tool, ctx, action, key, nil, false); result.IsError {
+			t.Errorf("read-only action %q failed: %s", action, result.ForLLM)
+		}
+	}
+	for _, action := range []string{"set", "reset", "undo"} {
+		if result := runSelfTool(tool, ctx, action, "max_iterations", 35, true); !result.IsError {
+			t.Errorf("write action %q succeeded in read-only mode", action)
+		}
+	}
+}
+
+func TestSelfToolResetClearsOverrideAndIsUndoable(t *testing.T) {
+	runtime := selfReadOnlyRuntime()
+	tool := NewSelfTool(runtime, true)
+	ctx := selfTestContext("session-1")
+
+	if result := runSelfTool(tool, ctx, "set", "max_iterations", float64(35), true); result.IsError {
+		t.Fatalf("set max_iterations: %s", result.ForLLM)
+	}
+	if result := runSelfTool(tool, ctx, "reset", "max_iterations", nil, false); result.IsError {
+		t.Fatalf("reset max_iterations: %s", result.ForLLM)
+	}
+	if runtime.resetKey != "max_iterations" {
+		t.Fatalf("reset key = %q, want max_iterations", runtime.resetKey)
+	}
+	if result := runSelfTool(tool, ctx, "reset", "model", nil, false); !result.IsError {
+		t.Error("reset accepted the read-only model key")
+	}
+
+	history := runSelfTool(tool, ctx, "history", "", nil, false).ForLLM
+	if !strings.Contains(history, `"action":"reset"`) || !strings.Contains(history, `"action":"set"`) {
+		t.Errorf("history = %s, want set and reset entries", history)
+	}
+}
+
+func TestSelfToolUndoRevertsScratchpadAndRuntime(t *testing.T) {
+	runtime := &selfToolTestRuntime{view: map[string]any{"max_iterations": 20}}
+	tool := NewSelfTool(runtime, true)
+	ctx := selfTestContext("session-1")
+
+	if result := runSelfTool(tool, ctx, "set", "plan", "first", true); result.IsError {
+		t.Fatalf("set plan first: %s", result.ForLLM)
+	}
+	if result := runSelfTool(tool, ctx, "set", "plan", "second", true); result.IsError {
+		t.Fatalf("set plan second: %s", result.ForLLM)
+	}
+	if result := runSelfTool(tool, ctx, "undo", "", nil, false); result.IsError {
+		t.Fatalf("undo plan: %s", result.ForLLM)
+	}
+	if got := runSelfTool(tool, ctx, "check", "plan", nil, false).ForLLM; got != "first" {
+		t.Fatalf("plan after undo = %q, want first", got)
+	}
+	if result := runSelfTool(tool, ctx, "undo", "", nil, false); result.IsError {
+		t.Fatalf("undo plan again: %s", result.ForLLM)
+	}
+	if result := runSelfTool(tool, ctx, "check", "plan", nil, false); !result.IsError {
+		t.Fatal("plan still exists after undoing its creation")
+	}
+
+	runtime.setKey, runtime.setValue = "", nil
+	if result := runSelfTool(tool, ctx, "set", "max_iterations", float64(35), true); result.IsError {
+		t.Fatalf("set max_iterations: %s", result.ForLLM)
+	}
+	if result := runSelfTool(tool, ctx, "undo", "", nil, false); result.IsError {
+		t.Fatalf("undo max_iterations: %s", result.ForLLM)
+	}
+	if runtime.setKey != "max_iterations" || runtime.setValue != 20 {
+		t.Fatalf("undo restored %q=%v, want max_iterations=20", runtime.setKey, runtime.setValue)
+	}
+
+	many := NewSelfTool(&selfToolTestRuntime{view: map[string]any{}}, true)
+	for i := 0; i < maxSelfHistory+5; i++ {
+		if result := runSelfTool(many, ctx, "set", fmt.Sprintf("k%d", i), i, true); result.IsError {
+			t.Fatalf("set k%d: %s", i, result.ForLLM)
+		}
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal([]byte(runSelfTool(many, ctx, "history", "", nil, false).ForLLM), &entries); err != nil {
+		t.Fatalf("history is not JSON: %v", err)
+	}
+	if len(entries) != maxSelfHistory {
+		t.Fatalf("history length = %d, want %d", len(entries), maxSelfHistory)
+	}
+}
+
+func TestSelfToolLogsTailsAndRedacts(t *testing.T) {
+	logFile := filepath.Join(t.TempDir(), "self.log")
+	if err := logger.EnableFileLogging(logFile); err != nil {
+		t.Fatalf("EnableFileLogging: %v", err)
+	}
+	defer logger.DisableFileLogging()
+
+	logger.InfoF("hello world", map[string]any{"api_key": "topsecret"})
+	logger.ErrorF("boom", nil)
+
+	tool := NewSelfTool(selfReadOnlyRuntime(), false)
+	ctx := selfTestContext("session-1")
+
+	all := runSelfTool(tool, ctx, "logs", "", nil, false)
+	if all.IsError {
+		t.Fatalf("logs: %s", all.ForLLM)
+	}
+	if !strings.Contains(all.ForLLM, "hello world") || !strings.Contains(all.ForLLM, "boom") {
+		t.Errorf("logs missing entries: %s", all.ForLLM)
+	}
+	if strings.Contains(all.ForLLM, "topsecret") {
+		t.Errorf("logs leaked a secret: %s", all.ForLLM)
+	}
+
+	errorsOnly := runSelfTool(tool, ctx, "logs", "error", nil, false).ForLLM
+	if !strings.Contains(errorsOnly, "boom") || strings.Contains(errorsOnly, "hello world") {
+		t.Errorf("logs error filter = %s, want only boom", errorsOnly)
 	}
 }

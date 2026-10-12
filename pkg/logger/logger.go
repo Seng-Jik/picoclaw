@@ -38,6 +38,7 @@ var (
 	currentLevel  = INFO
 	logger        zerolog.Logger
 	logFile       io.WriteCloser
+	logFilePath   string
 	once          sync.Once
 	mu            sync.RWMutex
 	writers       []io.Writer
@@ -191,6 +192,7 @@ func EnableFileLogging(filePath string) error {
 	}
 
 	logFile = newFile
+	logFilePath = filePath
 	if len(writers) == 1 {
 		writers = append(writers, logFile)
 	} else {
@@ -209,10 +211,32 @@ func DisableFileLogging() {
 		logFile.Close()
 		logFile = nil
 	}
+	logFilePath = ""
 	if len(writers) > 1 {
 		writers = writers[:1]
 		logger = logger.Output(io.MultiWriter(writers...))
 	}
+}
+
+// ActiveLogFiles returns the path of the currently open log file followed by
+// any rotated archives that exist, newest first. It returns nil when file
+// logging is disabled.
+func ActiveLogFiles() []string {
+	mu.RLock()
+	path := logFilePath
+	mu.RUnlock()
+	if path == "" {
+		return nil
+	}
+	files := []string{path}
+	_, backups := fileRotationLimits()
+	for i := 1; i <= backups; i++ {
+		candidate := fmt.Sprintf("%s.%d", path, i)
+		if _, err := os.Stat(candidate); err == nil {
+			files = append(files, candidate)
+		}
+	}
+	return files
 }
 
 func ConfigureFromEnv() {

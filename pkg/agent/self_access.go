@@ -57,6 +57,8 @@ var selfAccessRules = []selfAccessRule{
 	{path: "web_config", level: selfAccessReadOnly},
 	{path: "exec_config", level: selfAccessReadOnly},
 	{path: "model_presets", level: selfAccessReadOnly},
+	{path: "defaults", level: selfAccessReadOnly},
+	{path: "session_overrides", level: selfAccessReadOnly},
 
 	// Config sections are allowlisted: an unknown key added to the config is
 	// BLOCKED by default (see selfAccessLevelFor). BLOCKED rules below win over
@@ -270,6 +272,30 @@ func isSelfWritableRuntimeKey(path string) bool {
 
 func isSelfRuntimeRoot(path string) bool {
 	return selfRuntimeRoots[strings.Split(path, ".")[0]]
+}
+
+// selfAccessLevelName renders an access level for the self tool's list,
+// schema and explain output.
+func selfAccessLevelName(level selfAccessLevel) string {
+	switch level {
+	case selfAccessBlocked:
+		return "BLOCKED"
+	case selfAccessReadOnly:
+		return "READ_ONLY"
+	case selfAccessRestricted:
+		return "RESTRICTED"
+	default:
+		return "DEFAULT"
+	}
+}
+
+// selfRangeLabel describes the numeric range a RESTRICTED rule accepts. It is
+// empty for rules that take no numeric range (for example model_preset).
+func selfRangeLabel(rule selfAccessRule) string {
+	if rule.level != selfAccessRestricted || (rule.min == 0 && rule.max == 0) {
+		return ""
+	}
+	return fmt.Sprintf("%d-%d", rule.min, rule.max)
 }
 
 // selfRedactedValue marks a configuration value that the self tool hides.
