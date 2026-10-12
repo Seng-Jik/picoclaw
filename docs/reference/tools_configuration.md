@@ -44,10 +44,11 @@ of the current agent and request, including the workspace path, the web and
 exec settings, and the full PicoClaw configuration with credentials removed
 (`config`), and keeps a temporary scratchpad per session (cleared by
 `/clear`). Writes are disabled by default; enabling `allow_set` permits
-scratchpad writes and two changes that apply only to the session that makes
-them: `max_iterations` (1–100, effective immediately) and `model_preset` (a
-configured model, effective from the next turn). Session changes are lost on
-restart.
+scratchpad writes and session-scoped changes that apply only to the session that
+makes them: `max_iterations` (1–100, effective immediately),
+`context_window_tokens` (4096–1,000,000, effective immediately), and
+`model_preset` (a configured model, effective from the next turn). Session
+changes are lost on restart.
 
 ```json
 {
@@ -62,15 +63,20 @@ restart.
 
 Environment variables: `PICOCLAW_TOOLS_SELF_ENABLED` and `PICOCLAW_TOOLS_SELF_ALLOW_SET`.
 
-The tool rejects credential-like keys and excludes provider credentials from
-its runtime snapshot. `config` returns the whole configuration as read-only,
-JSON-safe data: `SecureString` fields are dropped and secret-like keys (for
-example `api_key`, `token`, `secret`, `password`, MCP `env` entries, or
-`Authorization` headers) are shown as `[REDACTED]`. `context_window_tokens` is
-read-only through the tool; change it in configuration. A direct `model` write
-is rejected; use `model_preset` instead. `max_iterations` needs a session key,
-so turns without one cannot change it. Runtime options that PicoClaw does not
-currently implement are not exposed as writable fields.
+The tool enforces a single access table over every path. `BLOCKED` sections
+(credentials and execution infrastructure such as `plugins`, `hooks`,
+`evolution`, `isolation`, `gateway`, `tools.mcp.servers`, dispatch and session
+routing) are omitted from reads and rejected on writes. `READ_ONLY` sections are
+readable but not writable. `RESTRICTED` keys are writable only for the current
+session and only inside their range: `max_iterations` (1–100) and
+`context_window_tokens` (4096–1,000,000). `config` returns the whole
+configuration as JSON-safe read-only data: `SecureString` fields are dropped and
+secret-like keys (for example `api_key`, `token`, `secret`, `password`,
+`Authorization` headers) are shown as `[REDACTED]`. A direct `model` write is
+rejected; use `model_preset` instead. `max_iterations` and
+`context_window_tokens` need a session key, so turns without one cannot change
+them. Runtime options that PicoClaw does not currently implement are not exposed
+as writable fields.
 
 ## Protected local files
 

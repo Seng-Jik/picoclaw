@@ -235,26 +235,44 @@ func TestSelfToolMaxIterationsRequiresSessionKey(t *testing.T) {
 	}
 }
 
-func TestSelfToolContextWindowTokensIsReadOnlyWithRealRuntime(t *testing.T) {
+func TestSelfToolContextWindowTokensIsSessionScoped(t *testing.T) {
 	f := newSessionModelFixture(t)
 	ctx := f.turnContext("session-a")
-	want := f.baseAgent.ContextWindow
+	base := f.baseAgent.ContextWindow
 
 	if result := runSelfTool(f.selfTool, ctx, "check", "context_window_tokens", nil, false); result.IsError ||
-		result.ForLLM != fmt.Sprint(want) {
-		t.Fatalf("check context_window_tokens = %q (error=%v), want %d", result.ForLLM, result.IsError, want)
+		result.ForLLM != fmt.Sprint(base) {
+		t.Fatalf("check context_window_tokens = %q (error=%v), want %d", result.ForLLM, result.IsError, base)
 	}
-	result := runSelfTool(f.selfTool, ctx, "set", "context_window_tokens", float64(65536), true)
-	if !result.IsError || !strings.Contains(result.ForLLM, "read-only") {
-		t.Fatalf("set context_window_tokens = %q (error=%v), want read-only rejection", result.ForLLM, result.IsError)
+	for _, value := range []any{float64(100), float64(2000000), float64(0), "big", true} {
+		if result := runSelfTool(f.selfTool, ctx, "set", "context_window_tokens", value, true); !result.IsError {
+			t.Errorf("context_window_tokens accepted invalid value %#v", value)
+		}
 	}
-	if f.baseAgent.ContextWindow != want {
-		t.Fatalf("context window changed to %d, want %d", f.baseAgent.ContextWindow, want)
+	if f.baseAgent.ContextWindow != base {
+		t.Fatalf("invalid set changed the agent context window to %d", f.baseAgent.ContextWindow)
 	}
-	if got := runSelfTool(f.selfTool, ctx, "check", "context_window_tokens", nil, false).ForLLM; got != fmt.Sprint(
-		want,
+
+	if result := runSelfTool(f.selfTool, ctx, "set", "context_window_tokens", float64(65536), true); result.IsError {
+		t.Fatalf("set context_window_tokens: %s", result.ForLLM)
+	}
+	if f.baseAgent.ContextWindow != base {
+		t.Fatalf("agent context window changed to %d, want it to stay %d", f.baseAgent.ContextWindow, base)
+	}
+	if got := f.al.sessionContextWindow(f.baseAgent.ID, "session-a"); got != 65536 {
+		t.Fatalf("session-a context window = %d, want 65536", got)
+	}
+	if got := f.al.sessionContextWindow(f.baseAgent.ID, "session-b"); got != 0 {
+		t.Fatalf("session-b context window = %d, want none", got)
+	}
+	if got := runSelfTool(f.selfTool, ctx, "check", "context_window_tokens", nil, false).ForLLM; got != "65536" {
+		t.Fatalf("check after set = %q, want 65536", got)
+	}
+	otherCtx := f.turnContext("session-b")
+	if got := runSelfTool(f.selfTool, otherCtx, "check", "context_window_tokens", nil, false).ForLLM; got != fmt.Sprint(
+		base,
 	) {
-		t.Fatalf("check after rejected set = %q, want %d", got, want)
+		t.Fatalf("session-b check = %q, want %d", got, base)
 	}
 }
 
@@ -267,12 +285,12 @@ func TestSelfToolContextWindowTokensIsNotSensitive(t *testing.T) {
 		result.ForLLM != "32768" {
 		t.Fatalf("check context_window_tokens = %q (error=%v), want 32768", result.ForLLM, result.IsError)
 	}
-	if result := runSelfTool(tool, ctx, "set", "context_window_tokens", float64(65536), true); !result.IsError ||
-		!strings.Contains(result.ForLLM, "read-only") {
-		t.Fatalf("set context_window_tokens = %q (error=%v), want read-only rejection", result.ForLLM, result.IsError)
-	}
-	if runtime.setKey != "" {
-		t.Fatalf("runtime.Set was called with %q for a read-only field", runtime.setKey)
+	if result := runSelfTool(tool, ctx, "set", "context_window_tokens", float64(65536), true); result.IsError ||
+		runtime.setKey != "context_window_tokens" {
+		t.Fatalf(
+			"set context_window_tokens = %q (error=%v, runtime key=%q)",
+			result.ForLLM, result.IsError, runtime.setKey,
+		)
 	}
 	for _, key := range []string{"access_token", "refresh_token", "context_window_tokens.api_key"} {
 		if result := runSelfTool(tool, ctx, "check", key, nil, false); !result.IsError {
@@ -353,6 +371,38 @@ func TestSelfToolScratchpadLimitsNoteSizeAndAllowsDelete(t *testing.T) {
 	}
 }
 
+func TestSelfAccessTable(t *testing.T) {
+	cases := []struct {
+		path  string
+		level selfAccessLevel
+	}{
+		{"max_iterations", selfAccessRestricted},
+		{"context_window_tokens", selfAccessRestricted},
+		{"model_preset", selfAccessRestricted},
+		{"model", selfAccessReadOnly},
+		{"config", selfAccessReadOnly},
+		{"config.voice.elevenlabs_api_key", selfAccessReadOnly},
+		{"config.agents.list.0.subagents", selfAccessBlocked},
+		{"config.tools.mcp.servers.demo.env", selfAccessBlocked},
+		{"config.tools.mcp.discovery", selfAccessReadOnly},
+		{"config.session.identity_links", selfAccessBlocked},
+		{"scratchpad-plan", selfAccessDefault},
+	}
+	for _, tc := range cases {
+		if got := selfAccessLevelFor(tc.path); got != tc.level {
+			t.Errorf("selfAccessLevelFor(%q) = %d, want %d", tc.path, got, tc.level)
+		}
+	}
+	for _, path := range []string{"", ".", "..", "_auth_token", "config.__class__"} {
+		if !selfPathDenied(path) {
+			t.Errorf("selfPathDenied(%q) = false, want true", path)
+		}
+	}
+	if selfPathDenied("config.tools") {
+		t.Error("selfPathDenied rejected a normal path")
+	}
+}
+
 func nestedSelfValue(depth int) any {
 	var value any = "leaf"
 	for range depth {
@@ -397,12 +447,37 @@ func TestRedactedConfigSnapshotHidesCredentials(t *testing.T) {
 	if defaults["max_tokens"] != float64(4096) {
 		t.Errorf("max_tokens was redacted: %v", defaults["max_tokens"])
 	}
-	env, _ := view["tools"].(map[string]any)["mcp"].(map[string]any)["servers"].(map[string]any)["demo"].(map[string]any)["env"].(map[string]any)
-	if env["PLAIN"] != "ok" {
-		t.Errorf("non-secret env value was lost: %v", env)
+	// BLOCKED sections are omitted entirely rather than redacted.
+	servers, _ := view["tools"].(map[string]any)["mcp"].(map[string]any)["servers"]
+	if servers != nil {
+		t.Errorf("blocked mcp.servers leaked into the snapshot: %v", servers)
 	}
-	if env["OPENAI_API_KEY"] != selfRedactedValue {
-		t.Errorf("secret env value = %v, want %q", env["OPENAI_API_KEY"], selfRedactedValue)
+	// A plaintext secret under a READ_ONLY key is masked, not dropped.
+	voice, _ := view["voice"].(map[string]any)
+	if voice["elevenlabs_api_key"] != selfRedactedValue {
+		t.Errorf("elevenlabs_api_key = %v, want %q", voice["elevenlabs_api_key"], selfRedactedValue)
+	}
+}
+
+func TestSelfToolBlocksInfrastructureSections(t *testing.T) {
+	agent := &AgentInstance{
+		ID: "main", modelMu: &sync.RWMutex{}, Tools: tools.NewToolRegistry(), MaxIterations: 20,
+	}
+	cfg := &config.Config{
+		Plugins: config.PluginsConfig{Enabled: true, Entries: map[string]config.PluginEntryConfig{
+			"demo": {Enabled: true, Path: "/host/secret/plugin"},
+		}},
+	}
+	tool := NewSelfTool(&agentRuntimeControl{agent: agent, cfg: cfg}, true)
+	ctx := selfTestContext("session-1")
+
+	if got := runSelfTool(tool, ctx, "check", "", nil, false).ForLLM; strings.Contains(got, "/host/secret/plugin") {
+		t.Fatalf("snapshot leaked a blocked plugin path: %s", got)
+	}
+	for _, key := range []string{"config.plugins", "config.plugins.entries"} {
+		if result := runSelfTool(tool, ctx, "check", key, nil, false); !result.IsError {
+			t.Errorf("check %q on a blocked section was allowed", key)
+		}
 	}
 }
 

@@ -266,6 +266,10 @@ type turnState struct {
 	// maxIterationsOverride is the limit the session chose through the self
 	// tool; 0 keeps the agent's configured limit.
 	maxIterationsOverride atomic.Int64
+
+	// contextWindowOverride is the context window the session chose through the
+	// self tool; 0 keeps the agent's configured window.
+	contextWindowOverride atomic.Int64
 }
 
 // maxIterations returns the tool-iteration limit that applies to this turn.
@@ -274,6 +278,14 @@ func (ts *turnState) maxIterations() int {
 		return int(limit)
 	}
 	return ts.agent.MaxIterations
+}
+
+// contextWindow returns the context window that applies to this turn.
+func (ts *turnState) contextWindow() int {
+	if window := ts.contextWindowOverride.Load(); window > 0 {
+		return int(window)
+	}
+	return ts.agent.ContextWindow
 }
 
 // =============================================================================

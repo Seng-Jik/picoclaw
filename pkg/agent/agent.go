@@ -69,6 +69,7 @@ type AgentLoop struct {
 	voiceModes      sync.Map
 	pendingStops    sync.Map
 	sessionLimits   sync.Map // sessionModelKey -> max_iterations set through the self tool
+	sessionWindows  sync.Map // sessionModelKey -> context_window_tokens set through the self tool
 	mu              sync.RWMutex
 
 	// workerSem limits concurrent turn processing workers.
@@ -596,6 +597,7 @@ func (al *AgentLoop) runAgentLoop(
 	)
 	ts := newTurnState(agent, opts, turnScope)
 	ts.maxIterationsOverride.Store(int64(al.sessionIterationLimit(agent.ID, opts.Dispatch.SessionKey)))
+	ts.contextWindowOverride.Store(int64(al.sessionContextWindow(agent.ID, opts.Dispatch.SessionKey)))
 	pipeline := NewPipeline(al)
 	result, err := al.runTurn(ctx, ts, pipeline)
 	if err != nil {

@@ -397,7 +397,7 @@ func (p *Pipeline) CallLLM(
 			if compactErr := p.ContextManager.Compact(ctx, &CompactRequest{
 				SessionKey: ts.sessionKey,
 				Reason:     ContextCompressReasonRetry,
-				Budget:     ts.agent.ContextWindow,
+				Budget:     ts.contextWindow(),
 			}); compactErr != nil {
 				logger.WarnCF("agent", "Context overflow compact failed", map[string]any{
 					"session_key": ts.sessionKey,
@@ -407,7 +407,7 @@ func (p *Pipeline) CallLLM(
 			ts.refreshRestorePointFromSession(ts.agent)
 			if asmResp, asmErr := p.ContextManager.Assemble(ctx, &AssembleRequest{
 				SessionKey: ts.sessionKey,
-				Budget:     ts.agent.ContextWindow,
+				Budget:     ts.contextWindow(),
 				MaxTokens:  ts.agent.MaxTokens,
 			}); asmErr == nil && asmResp != nil {
 				exec.history = asmResp.History
@@ -447,7 +447,7 @@ func (p *Pipeline) CallLLM(
 					}
 					return rebuilt
 				},
-				ts.agent.ContextWindow,
+				ts.contextWindow(),
 				exec.providerToolDefs,
 				ts.agent.MaxTokens,
 			)
@@ -464,7 +464,7 @@ func (p *Pipeline) CallLLM(
 					"retry":           retry,
 					"dropped_msgs":    dropped,
 					"remaining_msgs":  len(exec.history),
-					"context_window":  ts.agent.ContextWindow,
+					"context_window":  ts.contextWindow(),
 					"max_tokens":      ts.agent.MaxTokens,
 					"still_overlimit": !fit,
 				})
@@ -474,7 +474,7 @@ func (p *Pipeline) CallLLM(
 					"retry":               retry,
 					"history_msgs":        len(exec.history),
 					"protected_turn_msgs": len(protectedTurnTail),
-					"context_window":      ts.agent.ContextWindow,
+					"context_window":      ts.contextWindow(),
 					"max_tokens":          ts.agent.MaxTokens,
 				})
 			}

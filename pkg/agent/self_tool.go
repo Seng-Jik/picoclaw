@@ -57,14 +57,16 @@ func (t *SelfTool) Description() string {
 		"max_iterations, context_window_tokens, model, model_preset, model_presets, " +
 		"workspace, tool_names, config, web_config, exec_config, and request.channel/chat_id/sender_id.\n" +
 		"config holds the full PicoClaw configuration with credentials removed " +
-		"(secure fields are dropped and secret-like keys are shown as [REDACTED]).\n" +
-		"- set (key, value): change max_iterations (integer 1–100) for this session, " +
+		"(secure fields are dropped, secret-like keys are shown as [REDACTED], and " +
+		"infrastructure/execution sections are omitted).\n" +
+		"- set (key, value): change max_iterations (integer 1–100) or " +
+		"context_window_tokens (integer 4096–1000000) for this session, " +
 		"effective immediately, select a configured " +
 		"model_preset for this session (effective next turn), or store a JSON-safe " +
 		"scratchpad note (null deletes it). Scratchpad notes are shared across turns in this " +
 		"session, cleared by /clear, lost on restart, and limited to 64 keys, 128-byte keys, " +
 		"1024 bytes of JSON per value, and 10 levels of nesting.\n" +
-		"Direct model changes are disabled. context_window_tokens and the runtime snapshot " +
+		"Direct model changes are disabled. The runtime snapshot " +
 		"fields workspace, config, web_config, exec_config, model_presets, tool_names, and request " +
 		"are read-only.\n" +
 		"Use check for model/settings questions or to diagnose tool behavior; check " +
@@ -260,9 +262,11 @@ func (c *agentRuntimeControl) Snapshot(ctx context.Context) map[string]any {
 	}
 	agent := c.agent
 	maxIterations := agent.MaxIterations
+	contextWindow := agent.ContextWindow
 	if ts := turnStateFromContext(ctx); ts != nil && ts.agent != nil {
 		agent = ts.agent
 		maxIterations = ts.maxIterations()
+		contextWindow = ts.contextWindow()
 	} else {
 		mu := c.agent.modelStateMutex()
 		mu.RLock()
@@ -270,7 +274,7 @@ func (c *agentRuntimeControl) Snapshot(ctx context.Context) map[string]any {
 	}
 	view := map[string]any{
 		"max_iterations":        maxIterations,
-		"context_window_tokens": agent.ContextWindow,
+		"context_window_tokens": contextWindow,
 		"model":                 agent.Model,
 		"model_preset":          agent.Model,
 		"workspace":             agent.Workspace,
@@ -319,6 +323,26 @@ func (c *agentRuntimeControl) Set(ctx context.Context, key string, value any) er
 			return fmt.Errorf("session model changes require an active agent turn")
 		}
 		return al.setSessionModelPreset(ts.agentID, ts.sessionKey, ts.agent, preset)
+	case "context_window_tokens":
+		window, err := selfInt(value)
+		if err != nil {
+			return fmt.Errorf("context_window_tokens must be an integer: %w", err)
+		}
+		rule, _ := selfAccessRuleFor(key)
+		if window < rule.min || window > rule.max {
+			return selfValidationError(key, rule)
+		}
+		ts := turnStateFromContext(ctx)
+		al := AgentLoopFromContext(ctx)
+		if ts == nil || ts.agent == nil || al == nil {
+			return fmt.Errorf("session context window changes require an active agent turn")
+		}
+		if strings.TrimSpace(ts.sessionKey) == "" {
+			return fmt.Errorf("session context window changes require a session")
+		}
+		al.setSessionContextWindow(ts.agentID, ts.sessionKey, window)
+		ts.contextWindowOverride.Store(int64(window))
+		return nil
 	case "max_iterations":
 	default:
 		return fmt.Errorf(
@@ -356,6 +380,17 @@ func (al *AgentLoop) setSessionIterationLimit(agentID, sessionKey string, limit 
 func (al *AgentLoop) sessionIterationLimit(agentID, sessionKey string) int {
 	limit, _ := al.sessionLimits.Load(sessionModelKey{agentID: agentID, sessionKey: sessionKey})
 	value, _ := limit.(int)
+	return value
+}
+
+func (al *AgentLoop) setSessionContextWindow(agentID, sessionKey string, window int) {
+	al.sessionWindows.Store(sessionModelKey{agentID: agentID, sessionKey: sessionKey}, window)
+}
+
+// sessionContextWindow returns the context_window_tokens a session set, or 0 if none.
+func (al *AgentLoop) sessionContextWindow(agentID, sessionKey string) int {
+	window, _ := al.sessionWindows.Load(sessionModelKey{agentID: agentID, sessionKey: sessionKey})
+	value, _ := window.(int)
 	return value
 }
 
@@ -424,6 +459,7 @@ func (al *AgentLoop) clearSessionRuntime(agent *AgentInstance, sessionKey string
 	key := sessionModelKey{agentID: agent.ID, sessionKey: sessionKey}
 	al.clearSessionModelOverride(key)
 	al.sessionLimits.Delete(key)
+	al.sessionWindows.Delete(key)
 	if tool, ok := agent.Tools.Get("self"); ok {
 		if self, ok := tool.(*SelfTool); ok {
 			self.ClearSession(agent.ID, sessionKey)
@@ -457,65 +493,26 @@ func selfSessionID(ctx context.Context) string {
 	return selfSessionFor(ctx).session
 }
 
-var selfSensitiveParts = []string{
-	"api_key", "secret", "password", "passphrase", "token", "credential", "private_key",
-	"access_token", "refresh_token", "auth",
-}
-
-// selfNonSensitiveKeys lists configuration keys whose names contain a sensitive
-// substring but do not hold a credential, so the heuristic does not redact
-// harmless settings such as the token budget.
-var selfNonSensitiveKeys = map[string]bool{
-	"auth_method":             true,
-	"allow_token_query":       true,
-	"context_window_tokens":   true,
-	"default_token_budget":    true,
-	"max_tokens":              true,
-	"max_tokens_field":        true,
-	"max_total_tokens":        true,
-	"oauth":                   true,
-	"summarize_token_percent": true,
-}
-
 func validateSelfPath(path string) error {
 	// Runtime keys are fixed and harmless; "context_window_tokens" would
 	// otherwise match the "token" credential filter.
 	if isSelfRuntimeKey(path) {
 		return nil
 	}
+	if selfPathDenied(path) || selfAccessLevelFor(path) == selfAccessBlocked {
+		return fmt.Errorf("access denied")
+	}
 	for _, part := range strings.Split(path, ".") {
-		if part == "" || selfSensitiveName(part) {
+		if selfSensitiveName(part) {
 			return fmt.Errorf("access denied")
 		}
 	}
 	return nil
 }
 
-func selfSensitiveName(name string) bool {
-	name = strings.ToLower(strings.TrimSpace(name))
-	name = strings.NewReplacer("-", "_", " ", "_").Replace(name)
-	if selfNonSensitiveKeys[name] {
-		return false
-	}
-	for _, part := range selfSensitiveParts {
-		if strings.Contains(name, part) {
-			return true
-		}
-	}
-	return false
-}
-
 func isSelfReadOnly(path string) bool {
-	root := strings.Split(path, ".")[0]
-	switch root {
-	case "tool_names",
-		"exec_config",
-		"web_config",
-		"model_presets",
-		"workspace",
-		"request",
-		"config",
-		"context_window_tokens":
+	switch selfAccessLevelFor(path) {
+	case selfAccessBlocked, selfAccessReadOnly:
 		return true
 	default:
 		return false
@@ -533,7 +530,7 @@ func isSelfRuntimeKey(path string) bool {
 
 func isSelfRuntimeRoot(path string) bool {
 	switch strings.Split(path, ".")[0] {
-	case "max_iterations", "model", "model_preset":
+	case "max_iterations", "context_window_tokens", "model", "model_preset":
 		return true
 	default:
 		return false
