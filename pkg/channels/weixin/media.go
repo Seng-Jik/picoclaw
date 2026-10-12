@@ -809,7 +809,7 @@ func (c *WeixinChannel) uploadLocalFile(
 		if isSessionExpiredStatus(resp.Ret, resp.Errcode) {
 			c.pauseSession("getuploadurl", resp.Ret, resp.Errcode, resp.Errmsg)
 		}
-		return nil, fmt.Errorf("getuploadurl failed: ret=%d errcode=%d errmsg=%s", resp.Ret, resp.Errcode, resp.Errmsg)
+		return nil, &apiError{op: "getuploadurl", ret: resp.Ret, errcode: resp.Errcode, errmsg: resp.Errmsg}
 	}
 	uploadParam := strings.TrimSpace(resp.UploadParam)
 	uploadFullURL := strings.TrimSpace(resp.UploadFullURL)
@@ -930,7 +930,7 @@ func (c *WeixinChannel) sendMessageItem(
 		if isSessionExpiredStatus(resp.Ret, resp.Errcode) {
 			c.pauseSession("sendmessage", resp.Ret, resp.Errcode, resp.Errmsg)
 		}
-		return fmt.Errorf("sendmessage failed: ret=%d errcode=%d errmsg=%s", resp.Ret, resp.Errcode, resp.Errmsg)
+		return &apiError{op: "sendmessage", ret: resp.Ret, errcode: resp.Errcode, errmsg: resp.Errmsg}
 	}
 	return nil
 }
@@ -1146,7 +1146,9 @@ func (c *WeixinChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 				"ref":     part.Ref,
 				"error":   err.Error(),
 			})
-			if c.remainingPause() > 0 {
+			// iLink rejected the upload or the message (or the session is
+			// paused): retrying would re-upload the file and fail the same way.
+			if c.sendFailureIsPermanent(err) {
 				return nil, fmt.Errorf("weixin send media: %w", basechannels.ErrSendFailed)
 			}
 			return nil, fmt.Errorf("weixin send media: %w", basechannels.ErrTemporary)
