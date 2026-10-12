@@ -241,6 +241,56 @@ func TestCronService_ComputeNextRun(t *testing.T) {
 	}
 }
 
+func TestCronService_AdvanceNextRunAnchorsToScheduledTime(t *testing.T) {
+	cs, path := setupService(nil)
+	defer os.Remove(path)
+
+	now := time.Now().UnixMilli()
+	every := int64(1000)
+	scheduled := now - 100 // job fired 100ms late
+	job := &CronJob{
+		Enabled:  true,
+		Schedule: CronSchedule{Kind: "every", EveryMS: &every},
+		State:    CronJobState{NextRunAtMS: &scheduled},
+	}
+
+	cs.advanceNextRun(job, now)
+
+	if job.State.NextRunAtMS == nil {
+		t.Fatal("expected next run")
+	}
+	want := scheduled + every
+	if *job.State.NextRunAtMS != want {
+		t.Fatalf(
+			"next run = %d, want anchored %d (drift-free); now+every would be %d",
+			*job.State.NextRunAtMS, want, now+every,
+		)
+	}
+}
+
+func TestCronService_AdvanceNextRunReanchorsAfterGap(t *testing.T) {
+	cs, path := setupService(nil)
+	defer os.Remove(path)
+
+	now := time.Now().UnixMilli()
+	every := int64(1000)
+	stale := now - 10_000 // far behind, e.g. after downtime
+	job := &CronJob{
+		Enabled:  true,
+		Schedule: CronSchedule{Kind: "every", EveryMS: &every},
+		State:    CronJobState{NextRunAtMS: &stale},
+	}
+
+	cs.advanceNextRun(job, now)
+
+	if job.State.NextRunAtMS == nil {
+		t.Fatal("expected next run")
+	}
+	if *job.State.NextRunAtMS <= now {
+		t.Fatalf("expected re-anchored future run, got %d (now %d)", *job.State.NextRunAtMS, now)
+	}
+}
+
 // 3. Test Execution Flow
 func TestCronService_ExecutionFlow(t *testing.T) {
 	var mu sync.Mutex

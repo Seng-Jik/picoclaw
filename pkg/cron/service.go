@@ -195,12 +195,7 @@ func (cs *CronService) checkJobs() {
 		if job.State.NextRunAtMS == nil || *job.State.NextRunAtMS > now {
 			continue
 		}
-		if job.Schedule.Kind == "at" {
-			// One-time jobs are finalized by executeJobByID.
-			job.State.NextRunAtMS = nil
-			continue
-		}
-		job.State.NextRunAtMS = cs.computeNextRun(&job.Schedule, now)
+		cs.advanceNextRun(job, now)
 	}
 
 	if err := cs.saveStoreUnsafe(); err != nil {
@@ -334,6 +329,30 @@ func (cs *CronService) executeJobByID(jobID string) {
 	if err := cs.saveStoreUnsafe(); err != nil {
 		log.Printf("[cron] failed to save store: %v", err)
 	}
+}
+
+// advanceNextRun moves a due job to its next occurrence. Recurring jobs are
+// anchored to their previously scheduled time so handler duration and loop
+// wake lateness do not accumulate drift. If the scheduled time is so far in
+// the past that the next occurrence already elapsed (e.g. after downtime), it
+// re-anchors to now to avoid a catch-up burst.
+func (cs *CronService) advanceNextRun(job *CronJob, nowMS int64) {
+	if job.Schedule.Kind == "at" {
+		// One-time jobs are finalized by executeJobByID.
+		job.State.NextRunAtMS = nil
+		return
+	}
+
+	anchor := nowMS
+	if job.State.NextRunAtMS != nil {
+		anchor = *job.State.NextRunAtMS
+	}
+
+	next := cs.computeNextRun(&job.Schedule, anchor)
+	if next != nil && *next <= nowMS {
+		next = cs.computeNextRun(&job.Schedule, nowMS)
+	}
+	job.State.NextRunAtMS = next
 }
 
 func (cs *CronService) computeNextRun(schedule *CronSchedule, nowMS int64) *int64 {
