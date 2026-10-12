@@ -156,3 +156,71 @@ func TestStripExtendedDrivePrefix(t *testing.T) {
 		t.Error("drive-letter extended paths must pass the NT check; UNC must not")
 	}
 }
+
+func TestFileSafetySymlinkedCredentialTargets(t *testing.T) {
+	for _, name := range []string{"auth.json", "auth/mcp", "plugin-data", "channels/weixin/context-tokens", "codex/auth.json"} {
+		t.Run(name, func(t *testing.T) {
+			workspace := t.TempDir()
+			home := t.TempDir()
+			codexHome := t.TempDir()
+			t.Setenv("PICOCLAW_HOME", home)
+			t.Setenv("CODEX_HOME", codexHome)
+			root := filepath.Join(workspace, "cache")
+			if err := os.Mkdir(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(root, "token.txt")
+			if err := os.WriteFile(path, []byte("TOP_SECRET"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(home, filepath.FromSlash(name))
+			target := root
+			if name == "auth.json" || name == "codex/auth.json" {
+				target = path
+			}
+			if name == "codex/auth.json" {
+				link = filepath.Join(codexHome, "auth.json")
+			}
+			if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, link); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			for _, restrict := range []bool{false, true} {
+				patterns := []*regexp.Regexp{regexp.MustCompile(".*")}
+				read := NewReadFileTool(workspace, restrict, MaxReadFileSize, patterns)
+				if result := read.Execute(context.Background(), map[string]any{"path": path}); !result.IsError {
+					t.Errorf("read allowed, restrict=%v: %+v", restrict, result)
+				}
+				for _, tool := range []interface {
+					Execute(ctx context.Context, args map[string]any) *ToolResult
+				}{
+					NewWriteFileTool(workspace, restrict, patterns),
+					NewEditFileTool(workspace, restrict, patterns),
+					NewAppendFileTool(workspace, restrict, patterns),
+				} {
+					result := tool.Execute(context.Background(), map[string]any{
+						"path": path, "content": "changed", "overwrite": true,
+						"old_text": "TOP_SECRET", "new_text": "changed",
+					})
+					if !result.IsError {
+						t.Errorf("write allowed, restrict=%v: %+v", restrict, result)
+					}
+				}
+			}
+			data, err := os.ReadFile(path)
+			if err != nil || string(data) != "TOP_SECRET" {
+				t.Fatalf("credential changed: %q, %v", data, err)
+			}
+			if target == root {
+				result := NewWriteFileTool(workspace, true).Execute(context.Background(), map[string]any{
+					"path": filepath.Join(root, "new", "token.txt"), "content": "new token",
+				})
+				if !result.IsError {
+					t.Fatalf("new credential allowed: %+v", result)
+				}
+			}
+		})
+	}
+}

@@ -267,11 +267,13 @@ func isWithinProtectedRoot(path, root string, protectedPaths []string) bool {
 	if matchesProtectedRelativePath(filepath.Clean(home), path, protectedPaths) {
 		return true
 	}
-	if !mayBeProtectedPath(path, protectedPaths) {
-		return false
+	for _, protected := range protectedPaths {
+		resolved, err := resolvePathAgainstExistingAncestor(filepath.Join(home, filepath.FromSlash(protected)))
+		if err == nil && isWithinWorkspace(path, resolved) {
+			return true
+		}
 	}
-	resolved, err := filepath.EvalSymlinks(home)
-	return err == nil && matchesProtectedRelativePath(resolved, path, protectedPaths)
+	return false
 }
 
 func matchesProtectedRelativePath(root, path string, protectedPaths []string) bool {
@@ -282,16 +284,6 @@ func matchesProtectedRelativePath(root, path string, protectedPaths []string) bo
 	rel = strings.ToLower(filepath.ToSlash(rel))
 	for _, protected := range protectedPaths {
 		if rel == protected || strings.HasPrefix(rel, protected+"/") {
-			return true
-		}
-	}
-	return false
-}
-
-func mayBeProtectedPath(path string, protectedPaths []string) bool {
-	path = "/" + strings.Trim(strings.ToLower(filepath.ToSlash(filepath.Clean(path))), "/") + "/"
-	for _, protected := range protectedPaths {
-		if strings.Contains(path, "/"+protected+"/") {
 			return true
 		}
 	}
