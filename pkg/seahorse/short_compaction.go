@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -846,6 +847,23 @@ Output requirements:
 </conversation_segment>`, targetTokens, prev, sourceText)
 }
 
+// maxTruncatedSummaryBytes bounds the deterministic fallback summary size.
+const maxTruncatedSummaryBytes = 2048
+
+// truncateUTF8Bytes cuts s to at most maxBytes bytes without splitting a UTF-8
+// rune, so the result is always valid UTF-8. CJK text is 3 bytes per rune, so a
+// naive byte slice would leave a dangling partial rune.
+func truncateUTF8Bytes(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	s = s[:maxBytes]
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s
+}
+
 func truncateSummary(messages []Message) string {
 	content := ""
 	for _, m := range messages {
@@ -855,9 +873,7 @@ func truncateSummary(messages []Message) string {
 		}
 		content += c + "\n"
 	}
-	if len(content) > 2048 {
-		content = content[:2048]
-	}
+	content = truncateUTF8Bytes(content, maxTruncatedSummaryBytes)
 	content += fmt.Sprintf("\n[Truncated from %d messages]", len(messages))
 	return content
 }
@@ -867,9 +883,7 @@ func truncateCondensedSummaries(summaries []Summary) string {
 	for _, s := range summaries {
 		content += s.Content + "\n"
 	}
-	if len(content) > 2048 {
-		content = content[:2048]
-	}
+	content = truncateUTF8Bytes(content, maxTruncatedSummaryBytes)
 	content += fmt.Sprintf("\n[Condensed from %d summaries]", len(summaries))
 	return content
 }
