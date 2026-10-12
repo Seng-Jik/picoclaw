@@ -187,15 +187,20 @@ func (cs *CronService) checkJobs() {
 		}
 	}
 
-	// Reset next run for due jobs before unlocking to avoid duplicate execution.
-	dueMap := make(map[string]bool, len(dueJobIDs))
-	for _, jobID := range dueJobIDs {
-		dueMap[jobID] = true
-	}
+	// Advance the schedule for due jobs synchronously before unlocking. This
+	// keeps the scheduler loop's wake time valid while the handler runs in a
+	// goroutine, and prevents duplicate execution.
 	for i := range cs.store.Jobs {
-		if dueMap[cs.store.Jobs[i].ID] {
-			cs.store.Jobs[i].State.NextRunAtMS = nil
+		job := &cs.store.Jobs[i]
+		if job.State.NextRunAtMS == nil || *job.State.NextRunAtMS > now {
+			continue
 		}
+		if job.Schedule.Kind == "at" {
+			// One-time jobs are finalized by executeJobByID.
+			job.State.NextRunAtMS = nil
+			continue
+		}
+		job.State.NextRunAtMS = cs.computeNextRun(&job.Schedule, now)
 	}
 
 	if err := cs.saveStoreUnsafe(); err != nil {
@@ -204,9 +209,17 @@ func (cs *CronService) checkJobs() {
 
 	cs.mu.Unlock()
 
-	// Execute jobs outside lock.
+	// Execute jobs outside the lock, each in its own goroutine so a slow
+	// handler does not block the scheduler loop or other due jobs.
 	for _, jobID := range dueJobIDs {
-		cs.executeJobByID(jobID)
+		go func(id string) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[cron] recovered panic while executing job %s: %v", id, r)
+				}
+			}()
+			cs.executeJobByID(id)
+		}(jobID)
 	}
 }
 
@@ -239,7 +252,16 @@ func (cs *CronService) executeJobByID(jobID string) {
 		skipped bool
 	)
 	if cs.onJob != nil {
-		_, err = cs.onJob(callbackJob)
+		// Isolate handler panics so the job state is still updated and the
+		// schedule remains alive instead of being left with a nil next run.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("job handler panicked: %v", r)
+				}
+			}()
+			_, err = cs.onJob(callbackJob)
+		}()
 	} else {
 		skipped = true
 	}
@@ -278,7 +300,8 @@ func (cs *CronService) executeJobByID(jobID string) {
 		job.State.LastError = ""
 	}
 
-	// Compute next run time
+	// Recurring schedules were already advanced in checkJobs; only one-time
+	// jobs need their lifecycle finalized here.
 	var nextRunStr string
 	if job.Schedule.Kind == "at" {
 		if job.DeleteAfterRun {
@@ -289,14 +312,10 @@ func (cs *CronService) executeJobByID(jobID string) {
 			job.State.NextRunAtMS = nil
 			nextRunStr = "(disabled)"
 		}
+	} else if job.State.NextRunAtMS != nil {
+		nextRunStr = time.UnixMilli(*job.State.NextRunAtMS).Format("2006-01-02 15:04:05")
 	} else {
-		nextRun := cs.computeNextRun(&job.Schedule, time.Now().UnixMilli())
-		job.State.NextRunAtMS = nextRun
-		if nextRun != nil {
-			nextRunStr = time.UnixMilli(*nextRun).Format("2006-01-02 15:04:05")
-		} else {
-			nextRunStr = "(none)"
-		}
+		nextRunStr = "(none)"
 	}
 
 	switch {

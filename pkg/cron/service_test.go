@@ -359,6 +359,79 @@ func TestCronService_PersistenceIntegrity(t *testing.T) {
 	}
 }
 
+func TestCronService_SlowHandlerDoesNotBlockScheduler(t *testing.T) {
+	var mu sync.Mutex
+	fires := 0
+	handler := func(job *CronJob) (string, error) {
+		time.Sleep(200 * time.Millisecond)
+		mu.Lock()
+		fires++
+		mu.Unlock()
+		return "ok", nil
+	}
+
+	cs, path := setupService(handler)
+	defer os.Remove(path)
+
+	if err := cs.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer cs.Stop()
+
+	everyMS := int64(50)
+	if _, err := cs.AddJob(
+		"Slow",
+		CronSchedule{Kind: "every", EveryMS: &everyMS},
+		"msg",
+		"cli",
+		"direct",
+	); err != nil {
+		t.Fatalf("AddJob failed: %v", err)
+	}
+
+	time.Sleep(1200 * time.Millisecond)
+
+	mu.Lock()
+	got := fires
+	mu.Unlock()
+	if got < 10 {
+		t.Fatalf("slow handler blocked the scheduler: only %d fires in 1.2s (want >=10)", got)
+	}
+}
+
+func TestCronService_HandlerPanicKeepsScheduleAlive(t *testing.T) {
+	handler := func(job *CronJob) (string, error) {
+		panic("boom")
+	}
+
+	cs, path := setupService(handler)
+	defer os.Remove(path)
+
+	if err := cs.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer cs.Stop()
+
+	everyMS := int64(30)
+	job, err := cs.AddJob("Panicky", CronSchedule{Kind: "every", EveryMS: &everyMS}, "msg", "cli", "direct")
+	if err != nil {
+		t.Fatalf("AddJob failed: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		current, ok := cs.GetJob(job.ID)
+		if ok && current.State.LastStatus == "error" {
+			if current.State.NextRunAtMS == nil {
+				t.Fatal("panic left recurring job with nil next run")
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("panicking job never recorded an error status")
+}
+
 func TestCronService_ConcurrentAccess(t *testing.T) {
 	cs, path := setupService(nil)
 	defer os.Remove(path)
