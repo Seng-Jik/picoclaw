@@ -291,6 +291,29 @@ func TestCronService_AdvanceNextRunReanchorsAfterGap(t *testing.T) {
 	}
 }
 
+func TestCronService_ComputeNextRunTimezone(t *testing.T) {
+	cs, path := setupService(nil)
+	defer os.Remove(path)
+
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
+
+	sched := CronSchedule{Kind: "cron", Expr: "0 9 * * *", TZ: "America/New_York"}
+	got := cs.computeNextRun(&sched, now)
+	if got == nil {
+		t.Fatal("expected next run for valid timezone")
+	}
+	// 09:00 EST (UTC-5) on 2024-01-01 is 14:00 UTC.
+	want := time.Date(2024, 1, 1, 14, 0, 0, 0, time.UTC).UnixMilli()
+	if *got != want {
+		t.Fatalf("next run = %s, want %s", time.UnixMilli(*got).UTC(), time.UnixMilli(want).UTC())
+	}
+
+	invalid := CronSchedule{Kind: "cron", Expr: "0 9 * * *", TZ: "Not/AZone"}
+	if cs.computeNextRun(&invalid, now) != nil {
+		t.Fatal("expected nil next run for invalid timezone")
+	}
+}
+
 // 3. Test Execution Flow
 func TestCronService_ExecutionFlow(t *testing.T) {
 	var mu sync.Mutex
