@@ -228,6 +228,7 @@ func (cs *CronService) executeJobByID(jobID string) {
 
 	cs.mu.RLock()
 	var callbackJob *CronJob
+	onJob := cs.onJob
 	for i := range cs.store.Jobs {
 		job := &cs.store.Jobs[i]
 		if job.ID == jobID {
@@ -251,7 +252,7 @@ func (cs *CronService) executeJobByID(jobID string) {
 		err     error
 		skipped bool
 	)
-	if cs.onJob != nil {
+	if onJob != nil {
 		// Isolate handler panics so the job state is still updated and the
 		// schedule remains alive instead of being left with a nil next run.
 		func() {
@@ -260,7 +261,7 @@ func (cs *CronService) executeJobByID(jobID string) {
 					err = fmt.Errorf("job handler panicked: %v", r)
 				}
 			}()
-			_, err = cs.onJob(callbackJob)
+			_, err = onJob(callbackJob)
 		}()
 	} else {
 		skipped = true

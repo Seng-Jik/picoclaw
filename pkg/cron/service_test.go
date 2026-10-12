@@ -432,6 +432,32 @@ func TestCronService_HandlerPanicKeepsScheduleAlive(t *testing.T) {
 	t.Fatal("panicking job never recorded an error status")
 }
 
+func TestCronService_SetOnJobConcurrentWithExecution(t *testing.T) {
+	cs, path := setupService(func(job *CronJob) (string, error) { return "", nil })
+	defer os.Remove(path)
+
+	if err := cs.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer cs.Stop()
+
+	everyMS := int64(1)
+	if _, err := cs.AddJob("Tick", CronSchedule{Kind: "every", EveryMS: &everyMS}, "m", "cli", "direct"); err != nil {
+		t.Fatalf("AddJob failed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range 200 {
+			cs.SetOnJob(func(job *CronJob) (string, error) { return "ok", nil })
+		}
+	}()
+	time.Sleep(500 * time.Millisecond)
+	wg.Wait()
+}
+
 func TestCronService_ConcurrentAccess(t *testing.T) {
 	cs, path := setupService(nil)
 	defer os.Remove(path)
