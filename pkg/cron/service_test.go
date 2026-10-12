@@ -543,7 +543,13 @@ func TestCronService_StartupFinalizesExpiredOneTimeJobs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddJob failed: %v", err)
 	}
-	if _, err := cs.AddJob("Recurring", CronSchedule{Kind: "every", EveryMS: &every}, "m", "cli", "direct"); err != nil {
+	if _, err := cs.AddJob(
+		"Recurring",
+		CronSchedule{Kind: "every", EveryMS: &every},
+		"m",
+		"cli",
+		"direct",
+	); err != nil {
 		t.Fatalf("AddJob failed: %v", err)
 	}
 
