@@ -26,6 +26,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	basechannels "github.com/sipeed/picoclaw/pkg/channels"
+	"github.com/sipeed/picoclaw/pkg/isolation"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 )
@@ -484,8 +485,12 @@ func tryTranscodeSilkToWAV(ctx context.Context, silk []byte) ([]byte, error) {
 
 			runCtx, cancel := context.WithTimeout(ctx, weixinVoiceTranscodeTimeout)
 			cmd := exec.CommandContext(runCtx, bin, decoder.args(tmpIn, tmpOut)...)
-			out, runErr := cmd.CombinedOutput()
+			var combined bytes.Buffer
+			cmd.Stdout = &combined
+			cmd.Stderr = &combined
+			runErr := isolation.Run(cmd)
 			cancel()
+			out := combined.Bytes()
 			if runErr != nil {
 				logger.DebugCF("weixin", "SILK transcode command failed", map[string]any{
 					"decoder": decoder.name,
