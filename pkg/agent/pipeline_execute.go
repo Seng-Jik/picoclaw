@@ -213,6 +213,19 @@ toolLoop:
 				if toolReq != nil && toolReq.HookResult != nil {
 					hookResult := toolReq.HookResult
 
+					// respond bypasses approve_tool by design (used for plugin
+					// tool injection). Surface the risky case where a hook
+					// shadows a tool that is actually registered, so operators
+					// can audit which sensitive tools were answered by a hook.
+					if _, registered := ts.agent.Tools.Get(toolName); registered {
+						logger.WarnCF("agent", "Hook respond shadows a registered tool and bypasses approval",
+							map[string]any{
+								"agent_id": ts.agent.ID,
+								"tool":     toolName,
+								"channel":  ts.channel,
+							})
+					}
+
 					logger.InfoCF("agent", fmt.Sprintf("Tool call (hook respond): %s", toolName),
 						map[string]any{
 							"agent_id":  ts.agent.ID,
