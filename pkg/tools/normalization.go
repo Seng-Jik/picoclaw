@@ -123,6 +123,11 @@ func normalizeToolResult(
 // for content tools such as read_file would spill again and loop. It is a no-op
 // when the result is small, already spilled, the workspace is unknown, or
 // persistence is disabled.
+//
+// Security note: this runs before the sensitive-data filter is applied, so the
+// artifact file on disk keeps the raw, unredacted tool output. Only the content
+// injected into the model context is filtered. Treat workspace artifacts as
+// sensitive data. See docs/security/sensitive_data_filtering.md.
 func persistLargeResultArtifact(result *ToolResult, toolName, workspace string, maxRunes int) {
 	if result == nil || maxRunes <= 0 || strings.TrimSpace(workspace) == "" {
 		return
