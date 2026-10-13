@@ -794,3 +794,70 @@ func (t *scriptedTransport) Close() error {
 func (t *scriptedTransport) SessionID() string {
 	return t.sessionID
 }
+
+// TestManager_CloseWaitsForInFlightCallTool verifies that Close does not close
+// server sessions until every in-flight CallTool has completed. This is the
+// guarantee that the locked closed-swap in Close must preserve.
+func TestManager_CloseWaitsForInFlightCallTool(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+
+	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "srv", Version: "1"}, nil)
+	sdkmcp.AddTool(server, &sdkmcp.Tool{Name: "block"},
+		func(_ context.Context, _ *sdkmcp.CallToolRequest, _ map[string]any) (*sdkmcp.CallToolResult, any, error) {
+			close(started)
+			<-release
+			return &sdkmcp.CallToolResult{
+				Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "done"}},
+			}, nil, nil
+		})
+
+	serverTransport, clientTransport := sdkmcp.NewInMemoryTransports()
+	ctx := t.Context()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer serverSession.Close()
+
+	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "picoclaw", Version: "1"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+
+	mgr := NewManager()
+	mgr.mu.Lock()
+	mgr.servers["srv"] = &ServerConnection{Name: "srv", Session: clientSession}
+	mgr.mu.Unlock()
+
+	callDone := make(chan error, 1)
+	go func() {
+		_, callErr := mgr.CallTool(ctx, "srv", "block", nil)
+		callDone <- callErr
+	}()
+	<-started
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- mgr.Close() }()
+
+	select {
+	case <-closeDone:
+		t.Fatal("Close returned while a CallTool was still in flight")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+
+	if callErr := <-callDone; callErr != nil {
+		t.Fatalf("CallTool error: %v", callErr)
+	}
+	select {
+	case closeErr := <-closeDone:
+		if closeErr != nil {
+			t.Fatalf("Close error: %v", closeErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return after the in-flight call completed")
+	}
+}

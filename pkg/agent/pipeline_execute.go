@@ -903,9 +903,9 @@ toolLoop:
 	// allResponsesHandled=false and no pending steering: continue so coordinator
 	// makes another LLM call. The tool result is in messages and the LLM will
 	// return it as finalContent in the next iteration.
-	ts.agent.Tools.TickTTL()
-	logger.DebugCF("agent", "TTL tick after tool execution", map[string]any{
-		"agent_id": ts.agent.ID, "iteration": iteration,
-	})
+	//
+	// Discovery TTL is intentionally NOT ticked here: it advances once per
+	// conversational turn in runTurn, so a tool discovered in this turn stays
+	// callable across the remaining tool-loop iterations of the same turn.
 	return ToolControlContinue
 }

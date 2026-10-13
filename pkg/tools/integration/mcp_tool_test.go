@@ -107,6 +107,22 @@ func TestMCPTool_Name(t *testing.T) {
 	}
 }
 
+// TestMCPTool_Name_DistinguishesCaseOnlyServers verifies that servers whose
+// names differ only by case do not collapse to the same tool identifier.
+func TestMCPTool_Name_DistinguishesCaseOnlyServers(t *testing.T) {
+	manager := &MockMCPManager{}
+	upper := NewMCPTool(manager, "GitHub", &mcp.Tool{Name: "search"})
+	lower := NewMCPTool(manager, "github", &mcp.Tool{Name: "search"})
+
+	if upper.Name() == lower.Name() {
+		t.Fatalf("case-only servers produced the same tool name %q", upper.Name())
+	}
+	if !strings.HasPrefix(upper.Name(), "mcp_github_search") ||
+		!strings.HasPrefix(lower.Name(), "mcp_github_search") {
+		t.Fatalf("unexpected names: %q, %q", upper.Name(), lower.Name())
+	}
+}
+
 func TestMCPTool_PromptMetadata(t *testing.T) {
 	manager := &MockMCPManager{}
 	tool := NewMCPTool(manager, "GitHub Server", &mcp.Tool{Name: "create_issue"})
@@ -896,5 +912,95 @@ func TestMCPTool_Execute_WhitespaceWorkspaceDisablesArtifactPersistence(t *testi
 	}
 	if !strings.Contains(result.ForLLM, "This is a large MCP text payload") {
 		t.Fatalf("expected large text to remain inline when workspace is blank, got %q", result.ForLLM)
+	}
+}
+
+func TestPruneMCPArtifacts_RemovesStaleFiles(t *testing.T) {
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old.txt")
+	freshPath := filepath.Join(dir, "fresh.txt")
+	if err := os.WriteFile(oldPath, []byte("old"), 0o600); err != nil {
+		t.Fatalf("write old: %v", err)
+	}
+	if err := os.WriteFile(freshPath, []byte("fresh"), 0o600); err != nil {
+		t.Fatalf("write fresh: %v", err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(oldPath, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	pruneMCPArtifacts(dir, 24*time.Hour, 0)
+
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("expected stale artifact removed, err=%v", err)
+	}
+	if _, err := os.Stat(freshPath); err != nil {
+		t.Fatalf("expected fresh artifact kept, err=%v", err)
+	}
+}
+
+func TestPruneMCPArtifacts_EnforcesMaxFiles(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 6; i++ {
+		path := filepath.Join(dir, fmt.Sprintf("a%d.txt", i))
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatalf("write a%d: %v", i, err)
+		}
+		mod := time.Now().Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(path, mod, mod); err != nil {
+			t.Fatalf("chtimes a%d: %v", i, err)
+		}
+	}
+
+	pruneMCPArtifacts(dir, time.Hour, 2)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 artifacts after prune, got %d", len(entries))
+	}
+	for _, name := range []string{"a4.txt", "a5.txt"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("expected newest %s kept: %v", name, err)
+		}
+	}
+}
+
+func TestMCPTool_Execute_PrunesStaleArtifacts(t *testing.T) {
+	workspace := t.TempDir()
+	dir := filepath.Join(workspace, ".artifacts", "mcp")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir artifacts: %v", err)
+	}
+	stale := filepath.Join(dir, "stale.txt")
+	if err := os.WriteFile(stale, []byte("stale"), 0o600); err != nil {
+		t.Fatalf("write stale: %v", err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatalf("chtimes stale: %v", err)
+	}
+
+	largeText := strings.Repeat("This is a large MCP text payload.\n", 800)
+	manager := &MockMCPManager{
+		callToolFunc: func(ctx context.Context, serverName, toolName string, arguments map[string]any) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: largeText}},
+			}, nil
+		},
+	}
+	mcpTool := NewMCPTool(manager, "test_server", &mcp.Tool{Name: "dump_payload"})
+	mcpTool.SetWorkspace(workspace)
+	mcpTool.SetMaxInlineTextRunes(32)
+
+	result := mcpTool.Execute(context.Background(), nil)
+	if len(result.ArtifactTags) != 1 {
+		t.Fatalf("expected 1 artifact tag, got %+v", result.ArtifactTags)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("expected stale artifact pruned on write, err=%v", err)
 	}
 }

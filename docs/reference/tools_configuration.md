@@ -406,7 +406,7 @@ and injected into the context for a configured number of turns (`ttl`).
 
 | Config               | Type | Default | Description                                                                                                                       |
 |----------------------|------|---------|-----------------------------------------------------------------------------------------------------------------------------------|
-| `enabled`            | bool | false   | Global default: if `true`, all MCP tools are hidden and loaded on-demand via search; if `false`, all tools are loaded into context. Individual servers can override this with the per-server `deferred` field. |
+| `enabled`            | bool | false   | Global default: if `true`, all MCP tools are hidden and loaded on-demand via search; if `false`, all tools are loaded into context and discovery is off. Individual servers can only opt *out* with `deferred: false` while this is `true`; a per-server `deferred: true` has no effect when this is `false`. |
 | `ttl`                | int  | 5       | Number of conversational turns a discovered tool remains unlocked                                                                 |
 | `max_search_results` | int  | 5       | Maximum number of tools returned per search query                                                                                 |
 | `use_bm25`           | bool | true    | Enable the natural language/keyword search tool (`tool_search_tool_bm25`). **Warning**: consumes more resources than regex search |
@@ -420,8 +420,8 @@ and injected into the context for a configured number of turns (`ttl`).
 | Config     | Type    | Required | Description                                                                                                                                                     |
 |------------|---------|----------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `enabled`  | bool    | yes      | Enable this MCP server                                                                                                                                          |
-| `deferred` | bool    | no       | Override deferred mode for this server only. `true` = tools are hidden and discoverable via search; `false` = tools are always visible in context. When omitted, the global `discovery.enabled` value applies. |
-| `type`     | string  | no       | Transport type: `stdio`, `sse`, `http`                                                                                                                          |
+| `deferred` | bool    | no       | Per-server override, effective only when `discovery.enabled` is `true`. `true` = tools are hidden and discoverable via search; `false` = tools are always visible in context. When omitted, the global `discovery.enabled` value applies. Ignored (tools always visible) when `discovery.enabled` is `false`, because the discovery search tools are not registered in that case. |
+| `type`     | string  | no       | Transport type: `stdio`, `sse`, `http` (alias: `streamable-http`)                                                                                               |
 | `command`  | string  | stdio    | Executable command for stdio transport                                                                                                                          |
 | `args`     | array   | no       | Command arguments for stdio transport                                                                                                                           |
 | `env`      | object  | no       | Environment variables for stdio process                                                                                                                         |
@@ -436,7 +436,7 @@ and injected into the context for a configured number of turns (`ttl`).
 - If `type` is omitted, transport is auto-detected:
     - `url` is set → `sse`
     - `command` is set → `stdio`
-- `http` and `sse` both use `url` + optional `headers`.
+- `http` and `sse` both use `url` + optional `headers`. `streamable-http` is accepted as an alias for `http`.
 - `env`, `env_file`, and `inherit_env` are only applied to `stdio` servers.
 - By default, stdio servers inherit only `PATH`, `HOME`, `USER`, `LANG`, `LC_ALL`, `TERM`, `SHELL`, `TMPDIR`, and `XDG_*` (plus basic Windows process variables on Windows). `env_file` adds variables, and `env` overrides both the file and inherited values. Set `inherit_env: true` only if the server needs the entire parent environment.
 - `oauth: {}` enables browser login with dynamic client registration. Optional
@@ -587,9 +587,10 @@ default (deferred). `aws` explicitly opts in to deferred mode even though it is 
 }
 ```
 
-> **Tip:** `deferred` on a per-server basis is independent of `discovery.enabled`. You can keep
-> `discovery.enabled: false` globally (all tools visible by default) and still mark individual
-> high-volume servers as `"deferred": true` to avoid polluting the context with their tools.
+> **Note:** A per-server `deferred` value only takes effect when `discovery.enabled` is `true`.
+> It can pin a server's tools as always-visible (`"deferred": false`) or hidden (`"deferred": true`),
+> but it cannot enable discovery on its own: with `discovery.enabled: false` the search tools are
+> not registered, so `"deferred": true` is ignored and the server's tools stay visible.
 
 ## Skills Tool
 
