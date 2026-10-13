@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -81,11 +82,12 @@ func TestOpenRouterImageUsesBaseRequest(t *testing.T) {
 					Body:       io.NopCloser(bytes.NewReader([]byte(response))),
 				}, nil
 			})}
-			got, err := NewImageGenerateTool(nil, config.DefaultMaxMediaSize, nil).generateOpenRouterImage(
-				context.Background(), client, "https://openrouter.ai/api/v1", "key", model, "cat",
+			var buf bytes.Buffer
+			err := NewImageGenerateTool(nil, config.DefaultMaxMediaSize, nil).generateOpenRouterImage(
+				context.Background(), client, "https://openrouter.ai/api/v1", "key", model, "cat", &buf,
 			)
-			if err != nil || !bytes.Equal(got, image) {
-				t.Fatalf("image = %v, error = %v", got, err)
+			if err != nil || !bytes.Equal(buf.Bytes(), image) {
+				t.Fatalf("image = %v, error = %v", buf.Bytes(), err)
 			}
 		})
 	}
@@ -120,5 +122,51 @@ func TestImageGenerateAllowsConfiguredResponseSize(t *testing.T) {
 	}
 	if len(got) != len(response) {
 		t.Fatalf("response length = %d, want %d", len(got), len(response))
+	}
+}
+
+func TestImageSink_EnforcesLimitAndCapturesHeader(t *testing.T) {
+	var buf bytes.Buffer
+	sink := newImageSink(&buf, 8)
+	if _, err := sink.Write([]byte("12345")); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	if _, err := sink.Write([]byte("67890")); err == nil {
+		t.Fatal("expected write past the limit to fail")
+	}
+	if buf.String() != "12345" {
+		t.Fatalf("wrote %q, want only the accepted bytes", buf.String())
+	}
+	if string(sink.header) != "12345" {
+		t.Fatalf("header = %q, want the leading accepted bytes only", sink.header)
+	}
+}
+
+func TestWriteBase64Image_StreamsToWriter(t *testing.T) {
+	image := []byte("\x89PNG\r\n\x1a\npayload")
+	var buf bytes.Buffer
+	if err := writeBase64Image(&buf, base64.StdEncoding.EncodeToString(image)); err != nil {
+		t.Fatalf("writeBase64Image: %v", err)
+	}
+	if !bytes.Equal(buf.Bytes(), image) {
+		t.Fatalf("decoded = %v, want %v", buf.Bytes(), image)
+	}
+}
+
+func TestGenerateOpenRouterImage_RejectsOversized(t *testing.T) {
+	image := bytes.Repeat([]byte("x"), 4096)
+	client := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		response := fmt.Sprintf(`{"data":[{"b64_json":%q}]}`, base64.StdEncoding.EncodeToString(image))
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader([]byte(response))),
+		}, nil
+	})}
+	sink := newImageSink(io.Discard, 16) // smaller than the decoded image
+	err := NewImageGenerateTool(nil, config.DefaultMaxMediaSize, nil).generateOpenRouterImage(
+		context.Background(), client, "https://openrouter.ai/api/v1", "key", "m", "cat", sink,
+	)
+	if !errors.Is(err, errGeneratedImageTooLarge) {
+		t.Fatalf("error = %v, want errGeneratedImageTooLarge", err)
 	}
 }
