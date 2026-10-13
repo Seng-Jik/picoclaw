@@ -56,29 +56,29 @@ func TestSearchProviders_ClampResponseSize(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		provider func(*http.Client) searchProvider
+		provider func(*http.Client) SearchProvider
 	}{
 		{
 			name: "brave",
-			provider: func(c *http.Client) searchProvider {
+			provider: func(c *http.Client) SearchProvider {
 				return &BraveSearchProvider{keyPool: NewAPIKeyPool([]string{"test-key"}), client: c}
 			},
 		},
 		{
 			name: "tavily",
-			provider: func(c *http.Client) searchProvider {
+			provider: func(c *http.Client) SearchProvider {
 				return &TavilySearchProvider{keyPool: NewAPIKeyPool([]string{"test-key"}), client: c}
 			},
 		},
 		{
 			name: "duckduckgo",
-			provider: func(c *http.Client) searchProvider {
+			provider: func(c *http.Client) SearchProvider {
 				return &DuckDuckGoSearchProvider{client: c}
 			},
 		},
 		{
 			name: "perplexity",
-			provider: func(c *http.Client) searchProvider {
+			provider: func(c *http.Client) SearchProvider {
 				return &PerplexitySearchProvider{keyPool: NewAPIKeyPool([]string{"test-key"}), client: c}
 			},
 		},
@@ -101,10 +101,4 @@ func TestSearchProviders_ClampResponseSize(t *testing.T) {
 			}
 		})
 	}
-}
-
-// searchProvider is the minimal interface shared by the search providers under
-// test, letting the table drive them uniformly.
-type searchProvider interface {
-	Search(ctx context.Context, query string, count int, rangeCode string) (string, error)
 }
