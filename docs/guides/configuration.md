@@ -555,6 +555,8 @@ PicoClaw can perform periodic tasks automatically. Create a `HEARTBEAT.md` file 
 
 The agent will read this file every 30 minutes (configurable) and execute any tasks using available tools.
 
+Tasks are read from the content that follows the `Add your heartbeat tasks below this line:` marker. If the marker is missing, the whole file is treated as a task list. The auto-generated template leaves that section empty, so an untouched `HEARTBEAT.md` keeps the heartbeat idle. Quick answers are delivered back to the last active channel; long tasks should use `spawn` (see below), and the subagent reports its own result with the `message` tool.
+
 #### Async Tasks with Spawn
 
 For long-running tasks (web search, API calls), use the `spawn` tool to create a **subagent**:

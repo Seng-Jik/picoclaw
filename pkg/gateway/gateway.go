@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -427,7 +428,9 @@ func setupAndStartServices(
 	if err = runningServices.HeartbeatService.Start(); err != nil {
 		return nil, fmt.Errorf("error starting heartbeat service: %w", err)
 	}
-	fmt.Println("✓ Heartbeat service started")
+	if cfg.Heartbeat.Enabled {
+		fmt.Println("✓ Heartbeat service started")
+	}
 	runningServices.MediaStore = media.NewFileMediaStoreWithCleanup(media.MediaCleanerConfig{
 		Enabled:  cfg.Tools.MediaCleanup.Enabled,
 		MaxAge:   time.Duration(cfg.Tools.MediaCleanup.MaxAge) * time.Minute,
@@ -674,7 +677,9 @@ func restartServices(
 	if err = runningServices.HeartbeatService.Start(); err != nil {
 		return fmt.Errorf("error restarting heartbeat service: %w", err)
 	}
-	fmt.Println("  ✓ Heartbeat service restarted")
+	if cfg.Heartbeat.Enabled {
+		fmt.Println("  ✓ Heartbeat service restarted")
+	}
 	runningServices.MediaStore = media.NewFileMediaStoreWithCleanup(media.MediaCleanerConfig{
 		Enabled:  cfg.Tools.MediaCleanup.Enabled,
 		MaxAge:   time.Duration(cfg.Tools.MediaCleanup.MaxAge) * time.Minute,
@@ -864,9 +869,18 @@ func createHeartbeatHandler(agentLoop *agent.AgentLoop) func(prompt, channel, ch
 		if err != nil {
 			return tools.ErrorResult(fmt.Sprintf("Heartbeat error: %v", err))
 		}
-		if response == "HEARTBEAT_OK" {
-			return tools.SilentResult("Heartbeat OK")
-		}
-		return tools.SilentResult(response)
+		return heartbeatToolResult(response)
 	}
+}
+
+// heartbeatToolResult maps the raw heartbeat response into a ToolResult.
+// A non-empty response that is not the HEARTBEAT_OK sentinel is a quick task
+// answer and must reach the user, so it is returned as a user-facing result.
+// Everything else stays silent.
+func heartbeatToolResult(response string) *tools.ToolResult {
+	response = strings.TrimSpace(response)
+	if response == "" || response == "HEARTBEAT_OK" {
+		return tools.SilentResult("Heartbeat OK")
+	}
+	return tools.UserResult(response)
 }
