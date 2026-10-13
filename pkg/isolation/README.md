@@ -30,6 +30,12 @@ The implementation has four layers:
 
 All integrations that spawn subprocesses should reuse these helpers instead of calling `cmd.Start` or `cmd.Run` directly.
 
+Covered spawn sites: the `exec` tool, CLI providers (`claude-cli`, `codex-cli`), process hooks, MCP `stdio` servers, the Delta Chat RPC server, and the Weixin SILK voice decoder.
+
+Known exception: the Linux USB device monitor spawns `udevadm` directly (it only observes host devices and is out of the child-process isolation scope).
+
+`PrepareCommand` runs `Preflight` at most once per configuration generation; calling `isolation.Configure` again invalidates the cached result.
+
 ## Configuration
 
 Isolation lives under:
@@ -150,6 +156,8 @@ Capabilities:
 Default mounts include the instance root plus the minimum runtime system paths such as `/usr`, `/bin`, `/lib`, `/lib64`, and `/etc/resolv.conf`.
 
 At runtime, PicoClaw also adds the executable path, its directory, the effective working directory, and absolute path arguments when needed.
+
+Absolute path arguments are exposed **read-only**: a directory passed on the command line does not become a writable hole in the sandbox. Writable locations come from `expose_paths`, the effective working directory, or the parent of a non-existent path argument (so output files can still be created).
 
 There is no automatic fallback when `bwrap` is missing.
 
