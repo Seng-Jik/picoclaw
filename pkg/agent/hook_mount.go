@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -243,6 +244,7 @@ func processHookOptionsFromConfig(spec config.ProcessHookConfig) (ProcessHookOpt
 	}
 	opts.Observe = observeEnabled
 	opts.ObserveKinds = observeKinds
+	opts.CompletedOnly = slices.Contains(spec.Observe, "turn_completed")
 
 	for _, intercept := range spec.Intercept {
 		switch intercept {
