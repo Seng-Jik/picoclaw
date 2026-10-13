@@ -102,6 +102,20 @@ func (r *RetrievalEngine) Store() *Store {
 // with SQLITE_BUSY.
 const sqliteBusyTimeoutMS = 5000
 
+const (
+	// sqliteMaxOpenConns bounds the connection pool. The pure-Go SQLite driver
+	// keeps a page cache per connection, so an unbounded pool lets memory grow
+	// with concurrent load. SQLite already serializes writers and WAL supports
+	// concurrent readers, so a small pool is sufficient and keeps the cache
+	// footprint predictable on constrained devices.
+	sqliteMaxOpenConns = 2
+
+	// sqliteTempStoreFile tells SQLite to spill temporary tables and sort
+	// buffers to disk instead of memory (temp_store = FILE), which bounds the
+	// peak heap used by large compaction/sort queries.
+	sqliteTempStoreFile = 1
+)
+
 // sqliteDSN returns the driver DSN for path with the per-connection settings
 // every pooled connection must have. database/sql opens connections lazily and
 // recycles them, so running "PRAGMA busy_timeout" once via db.Exec only
@@ -112,7 +126,10 @@ func sqliteDSN(path string) string {
 	if strings.Contains(path, "?") {
 		sep = "&"
 	}
-	return fmt.Sprintf("%s%s_busy_timeout=%d&_pragma=synchronous(NORMAL)", path, sep, sqliteBusyTimeoutMS)
+	return fmt.Sprintf(
+		"%s%s_busy_timeout=%d&_pragma=synchronous(NORMAL)&_pragma=temp_store(%d)",
+		path, sep, sqliteBusyTimeoutMS, sqliteTempStoreFile,
+	)
 }
 
 // NewEngine creates a new short-term memory engine.
@@ -128,6 +145,11 @@ func NewEngine(config Config, completeFn CompleteFn) (*Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
+
+	// Bound the pool so the per-connection page cache cannot grow unchecked on
+	// memory-constrained devices (see sqliteMaxOpenConns).
+	db.SetMaxOpenConns(sqliteMaxOpenConns)
+	db.SetMaxIdleConns(sqliteMaxOpenConns)
 
 	// journal_mode is stored in the database file, so setting it once is
 	// enough. busy_timeout and synchronous are per-connection settings and

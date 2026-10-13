@@ -1995,8 +1995,9 @@ func TestNewEngineAppliesPragmasToEveryConnection(t *testing.T) {
 	defer eng.Close()
 
 	ctx := context.Background()
-	// Hold several connections at once so the pool must open distinct ones.
-	const conns = 3
+	// Hold every pooled connection at once so the pool must open distinct ones.
+	// The pool size is bounded (sqliteMaxOpenConns), so hold exactly that many.
+	conns := sqliteMaxOpenConns
 	held := make([]*sql.Conn, 0, conns)
 	for i := 0; i < conns; i++ {
 		c, connErr := eng.store.db.Conn(ctx)
@@ -2008,7 +2009,7 @@ func TestNewEngineAppliesPragmasToEveryConnection(t *testing.T) {
 	}
 
 	for i, c := range held {
-		var busy, synchronous int
+		var busy, synchronous, tempStore int
 		if scanErr := c.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busy); scanErr != nil {
 			t.Fatalf("conn %d busy_timeout: %v", i, scanErr)
 		}
@@ -2021,15 +2022,36 @@ func TestNewEngineAppliesPragmasToEveryConnection(t *testing.T) {
 		if synchronous != 1 { // 1 == NORMAL
 			t.Errorf("conn %d synchronous = %d, want 1 (NORMAL)", i, synchronous)
 		}
+		if scanErr := c.QueryRowContext(ctx, "PRAGMA temp_store").Scan(&tempStore); scanErr != nil {
+			t.Fatalf("conn %d temp_store: %v", i, scanErr)
+		}
+		if tempStore != sqliteTempStoreFile {
+			t.Errorf("conn %d temp_store = %d, want %d (FILE)", i, tempStore, sqliteTempStoreFile)
+		}
+	}
+}
+
+// TestNewEngineBoundsConnectionPool verifies the pool is bounded so the
+// per-connection page cache cannot grow without limit.
+func TestNewEngineBoundsConnectionPool(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "pool.db")
+	eng, err := NewEngine(Config{DBPath: dbPath}, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	defer eng.Close()
+	if got := eng.store.db.Stats().MaxOpenConnections; got != sqliteMaxOpenConns {
+		t.Fatalf("MaxOpenConnections = %d, want %d", got, sqliteMaxOpenConns)
 	}
 }
 
 func TestSQLiteDSN(t *testing.T) {
-	if got, want := sqliteDSN("/tmp/a.db"), "/tmp/a.db?_busy_timeout=5000&_pragma=synchronous(NORMAL)"; got != want {
+	if got, want := sqliteDSN("/tmp/a.db"),
+		"/tmp/a.db?_busy_timeout=5000&_pragma=synchronous(NORMAL)&_pragma=temp_store(1)"; got != want {
 		t.Errorf("sqliteDSN(plain) = %q, want %q", got, want)
 	}
 	if got, want := sqliteDSN("file:a.db?mode=rwc"),
-		"file:a.db?mode=rwc&_busy_timeout=5000&_pragma=synchronous(NORMAL)"; got != want {
+		"file:a.db?mode=rwc&_busy_timeout=5000&_pragma=synchronous(NORMAL)&_pragma=temp_store(1)"; got != want {
 		t.Errorf("sqliteDSN(uri) = %q, want %q", got, want)
 	}
 }
