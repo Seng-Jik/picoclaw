@@ -352,6 +352,9 @@ After this one-time step, `picoclaw-launcher` will open normally on subsequent l
 
 ## 🔌 Providers (LLM)
 
+<details>
+<summary><b>Show 30+ supported providers and configuration</b></summary>
+
 PicoClaw supports 30+ LLM providers through the `model_list` configuration. Use the `protocol/model` format:
 
 | Provider | Protocol | API Key | Notes |
@@ -418,7 +421,12 @@ For full provider configuration details, see [Providers & Models](docs/guides/pr
 
 </details>
 
+</details>
+
 ## 💬 Channels (Chat Apps)
+
+<details>
+<summary><b>Show 19+ supported channels and setup guides</b></summary>
 
 Talk to your PicoClaw through 19+ messaging platforms:
 
@@ -450,9 +458,14 @@ Talk to your PicoClaw through 19+ messaging platforms:
 
 For detailed channel setup instructions, see [Chat Apps Configuration](docs/guides/chat-apps.md).
 
+</details>
+
 ## 🔧 Tools
 
 ### 🔍 Web Search
+
+<details>
+<summary><b>Show supported search engines and free tiers</b></summary>
 
 PicoClaw can search the web to provide up-to-date information. Configure in `tools.web`:
 
@@ -468,6 +481,8 @@ PicoClaw can search the web to provide up-to-date information. Configure in `too
 | [Perplexity](https://www.perplexity.ai) | Required | Paid | AI-powered search |
 | [SearXNG](https://github.com/searxng/searxng) | Not needed | Self-hosted | Free metasearch engine |
 | [GLM Search](https://open.bigmodel.cn/) | Required | Varies | Zhipu web search |
+
+</details>
 
 ### ⚙️ Other Tools
 
