@@ -59,7 +59,7 @@ func downscaleToDataURL(localPath, mime string, maxDim, quality int) (string, bo
 	boxResample(dst, src)
 
 	var buf bytes.Buffer
-	outMIME := format
+	var outMIME string
 	switch format {
 	case "png":
 		if err := png.Encode(&buf, dst); err != nil {
