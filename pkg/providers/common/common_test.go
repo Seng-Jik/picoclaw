@@ -2,6 +2,7 @@ package common
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -798,5 +799,61 @@ func TestParseResponse_WithFunctionThoughtSignature(t *testing.T) {
 			out.ToolCalls[0].ExtraContent.Google.ThoughtSignature,
 			"sig456",
 		)
+	}
+}
+
+// --- NewStreamingJSONReader tests ---
+
+func TestNewStreamingJSONReader_RoundTrip(t *testing.T) {
+	payload := map[string]any{
+		"model":    "test-model",
+		"messages": []any{map[string]any{"role": "user", "content": strings.Repeat("z", 64*1024)}},
+		"n":        float64(3),
+	}
+
+	data, err := io.ReadAll(NewStreamingJSONReader(payload))
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("produced invalid JSON: %v", err)
+	}
+	if got["model"] != "test-model" {
+		t.Fatalf("model = %v, want test-model", got["model"])
+	}
+	if got["n"] != float64(3) {
+		t.Fatalf("n = %v, want 3", got["n"])
+	}
+}
+
+func TestNewStreamingJSONReader_HTTPBody(t *testing.T) {
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("server read: %v", err)
+		}
+		if err := json.Unmarshal(body, &received); err != nil {
+			t.Errorf("server got invalid JSON: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	payload := map[string]any{"hello": "world"}
+	req, err := http.NewRequest(http.MethodPost, server.URL, NewStreamingJSONReader(payload))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	resp.Body.Close()
+
+	if received["hello"] != "world" {
+		t.Fatalf("server received %v, want map[hello:world]", received)
 	}
 }

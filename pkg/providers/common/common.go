@@ -509,6 +509,27 @@ func AsInt(v any) (int, bool) {
 	}
 }
 
+// NewStreamingJSONReader serializes v as JSON into an io.Pipe and returns the
+// read end, for use as an HTTP request body.
+//
+// Marshaling the request body up front (json.Marshal + bytes.NewReader) keeps a
+// full copy of the payload in memory. For vision requests that copy can be tens
+// of megabytes of base64 image data that is already held in the message
+// structs, doubling the peak heap. Streaming the encoding lets the HTTP client
+// consume the JSON as it is produced, so the body is never fully materialized a
+// second time.
+//
+// The HTTP transport closes the returned reader once the request is sent, which
+// unblocks the producer goroutine if it is still writing.
+func NewStreamingJSONReader(v any) io.Reader {
+	pr, pw := io.Pipe()
+	go func() {
+		err := json.NewEncoder(pw).Encode(v)
+		_ = pw.CloseWithError(err)
+	}()
+	return pr
+}
+
 // AsFloat converts various numeric types to float64.
 func AsFloat(v any) (float64, bool) {
 	switch val := v.(type) {
