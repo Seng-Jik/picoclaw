@@ -1,0 +1,151 @@
+// PicoClaw - Ultra-lightweight personal AI agent
+// Inspired by and based on nanobot: https://github.com/HKUDS/nanobot
+// License: MIT
+//
+// Copyright (c) 2026 PicoClaw contributors
+
+package agent
+
+import (
+	"bytes"
+	"encoding/base64"
+	"image"
+	"image/color"
+	"image/jpeg"
+	"image/png"
+	"os"
+	"strings"
+)
+
+// downscaleToDataURL decodes an image file, downsamples it so that its longest
+// edge is at most maxDim pixels, and returns it as a base64 data URL together
+// with the MIME type of the encoded output. It reports ok=false when the image
+// is already small enough, cannot be decoded, or uses an unsupported format —
+// in which case the caller should fall back to sending the original file.
+//
+// Downscaling before base64-encoding is the single largest lever on the
+// transient memory used by the vision pipeline: a 20 MB photo becomes a few
+// hundred kilobytes, shrinking both the encoded payload held in the message
+// history and the JSON request built for the model.
+func downscaleToDataURL(localPath, mime string, maxDim, quality int) (string, bool) {
+	if maxDim <= 0 {
+		return "", false
+	}
+	switch mime {
+	case "image/jpeg", "image/jpg", "image/png", "image/gif":
+	default:
+		return "", false
+	}
+
+	f, err := os.Open(localPath)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+
+	src, format, err := image.Decode(f)
+	if err != nil {
+		return "", false
+	}
+
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	if w <= maxDim && h <= maxDim {
+		return "", false
+	}
+
+	nw, nh := scaledDimensions(w, h, maxDim)
+	dst := image.NewNRGBA(image.Rect(0, 0, nw, nh))
+	boxResample(dst, src)
+
+	var buf bytes.Buffer
+	outMIME := format
+	switch format {
+	case "png":
+		if err := png.Encode(&buf, dst); err != nil {
+			return "", false
+		}
+		outMIME = "image/png"
+	default:
+		if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: quality}); err != nil {
+			return "", false
+		}
+		outMIME = "image/jpeg"
+	}
+
+	var sb strings.Builder
+	sb.Grow(len("data:;base64,") + len(outMIME) + base64.StdEncoding.EncodedLen(buf.Len()))
+	sb.WriteString("data:")
+	sb.WriteString(outMIME)
+	sb.WriteString(";base64,")
+	sb.WriteString(base64.StdEncoding.EncodeToString(buf.Bytes()))
+	return sb.String(), true
+}
+
+// scaledDimensions returns the target size preserving aspect ratio, with both
+// edges at least 1 pixel.
+func scaledDimensions(w, h, maxDim int) (int, int) {
+	longest := w
+	if h > longest {
+		longest = h
+	}
+	if longest <= maxDim {
+		return w, h
+	}
+	nw := w * maxDim / longest
+	nh := h * maxDim / longest
+	if nw < 1 {
+		nw = 1
+	}
+	if nh < 1 {
+		nh = 1
+	}
+	return nw, nh
+}
+
+// boxResample averages each destination pixel over the corresponding source
+// rectangle. This is a straightforward, dependency-free downsampling filter
+// suitable for the large reduction factors used here (source >> target).
+func boxResample(dst *image.NRGBA, src image.Image) {
+	sb := src.Bounds()
+	sw, sh := sb.Dx(), sb.Dy()
+	db := dst.Bounds()
+	dw, dh := db.Dx(), db.Dy()
+
+	for dy := 0; dy < dh; dy++ {
+		sy0 := sb.Min.Y + dy*sh/dh
+		sy1 := sb.Min.Y + (dy+1)*sh/dh
+		if sy1 <= sy0 {
+			sy1 = sy0 + 1
+		}
+		for dx := 0; dx < dw; dx++ {
+			sx0 := sb.Min.X + dx*sw/dw
+			sx1 := sb.Min.X + (dx+1)*sw/dw
+			if sx1 <= sx0 {
+				sx1 = sx0 + 1
+			}
+
+			var r, g, bl, a, n uint32
+			for y := sy0; y < sy1; y++ {
+				for x := sx0; x < sx1; x++ {
+					c := color.NRGBAModel.Convert(src.At(x, y)).(color.NRGBA)
+					r += uint32(c.R)
+					g += uint32(c.G)
+					bl += uint32(c.B)
+					a += uint32(c.A)
+					n++
+				}
+			}
+			if n == 0 {
+				continue
+			}
+			half := n / 2
+			dst.SetNRGBA(db.Min.X+dx, db.Min.Y+dy, color.NRGBA{
+				R: uint8((r + half) / n),
+				G: uint8((g + half) / n),
+				B: uint8((bl + half) / n),
+				A: uint8((a + half) / n),
+			})
+		}
+	}
+}

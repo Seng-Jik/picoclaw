@@ -573,6 +573,8 @@ type AgentDefaults struct {
 	SummarizeMessageThreshold int                 `json:"summarize_message_threshold"      env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_MESSAGE_THRESHOLD"`
 	SummarizeTokenPercent     int                 `json:"summarize_token_percent"          env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_TOKEN_PERCENT"`
 	MaxMediaSize              int                 `json:"max_media_size,omitempty"         env:"PICOCLAW_AGENTS_DEFAULTS_MAX_MEDIA_SIZE"`
+	VisionMaxImageDimension   int                 `json:"vision_max_image_dimension,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_VISION_MAX_IMAGE_DIMENSION"`
+	VisionJPEGQuality         int                 `json:"vision_jpeg_quality,omitempty"        env:"PICOCLAW_AGENTS_DEFAULTS_VISION_JPEG_QUALITY"`
 	Routing                   *RoutingConfig      `json:"routing,omitempty"`
 	SteeringMode              string              `json:"steering_mode,omitempty"          env:"PICOCLAW_AGENTS_DEFAULTS_STEERING_MODE"`      // "one-at-a-time" (default) or "all"
 	MaxParallelTurns          int                 `json:"max_parallel_turns,omitempty"     env:"PICOCLAW_AGENTS_DEFAULTS_MAX_PARALLEL_TURNS"` // Max concurrent turns (0 or 1 = sequential)
@@ -594,6 +596,44 @@ func (d *AgentDefaults) GetMaxMediaSize() int {
 		return d.MaxMediaSize
 	}
 	return DefaultMaxMediaSize
+}
+
+const (
+	// DefaultVisionMaxImageDimension is the longest edge, in pixels, that an
+	// inline image is downscaled to before being base64-encoded for a vision
+	// model. It matches the resolution most multimodal LLMs use internally,
+	// so shrinking larger images does not lose information the model would
+	// have seen anyway, while cutting the base64 payload (and its transient
+	// heap footprint) by an order of magnitude for photos from modern cameras.
+	DefaultVisionMaxImageDimension = 1568
+
+	// DefaultVisionJPEGQuality is the JPEG quality used when an oversized
+	// image is recompressed. 85 is visually high quality for LLM input.
+	DefaultVisionJPEGQuality = 85
+)
+
+// GetVisionMaxImageDimension returns the configured longest-edge cap for inline
+// images. When unset (0) the default cap is applied, so oversized images are
+// downscaled out of the box. Set a negative value (e.g. -1) to disable
+// downscaling and send images as-is (bounded only by GetMaxMediaSize).
+func (d *AgentDefaults) GetVisionMaxImageDimension() int {
+	switch {
+	case d.VisionMaxImageDimension == 0:
+		return DefaultVisionMaxImageDimension
+	case d.VisionMaxImageDimension < 0:
+		return 0
+	default:
+		return d.VisionMaxImageDimension
+	}
+}
+
+// GetVisionJPEGQuality returns the JPEG quality for recompressed images,
+// clamped to [1,100] with a default when unset.
+func (d *AgentDefaults) GetVisionJPEGQuality() int {
+	if d.VisionJPEGQuality <= 0 || d.VisionJPEGQuality > 100 {
+		return DefaultVisionJPEGQuality
+	}
+	return d.VisionJPEGQuality
 }
 
 // GetToolFeedbackMaxArgsLength returns the max visible text length for tool argument previews.

@@ -16,6 +16,7 @@ import (
 
 	"github.com/h2non/filetype"
 
+	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -63,13 +64,62 @@ func resolveMediaRefs(
 	maxSize int,
 	currentTurnStart int,
 ) []providers.Message {
+	return resolveMediaRefsWithOptions(messages, store, mediaResolveOptions{maxSize: maxSize}, currentTurnStart)
+}
+
+// mediaResolveOptionsFor builds media resolution options from configuration.
+func mediaResolveOptionsFor(cfg *config.Config) mediaResolveOptions {
+	d := cfg.Agents.Defaults
+	return mediaResolveOptions{
+		maxSize:           d.GetMaxMediaSize(),
+		maxImageDimension: d.GetVisionMaxImageDimension(),
+		jpegQuality:       d.GetVisionJPEGQuality(),
+	}
+}
+
+// mediaResolveOptions controls how media references are turned into model input.
+type mediaResolveOptions struct {
+	// maxSize is the maximum file size, in bytes, that may be inlined.
+	maxSize int
+	// maxImageDimension is the longest-edge cap applied to inlined images.
+	// 0 disables downscaling and sends the original bytes.
+	maxImageDimension int
+	// jpegQuality is the JPEG quality used when an oversized image is
+	// recompressed. Ignored when maxImageDimension is 0.
+	jpegQuality int
+}
+
+// resolveMediaRefsWithOptions is resolveMediaRefs with explicit vision options.
+func resolveMediaRefsWithOptions(
+	messages []providers.Message,
+	store media.MediaStore,
+	opts mediaResolveOptions,
+	currentTurnStart int,
+) []providers.Message {
 	if store == nil {
 		return messages
 	}
 	currentTurnStart = normalizeCurrentTurnStart(messages, currentTurnStart)
 
+	// Fast path: with no media references there is nothing to resolve, so avoid
+	// allocating and copying the whole message slice (this function runs over
+	// the full history on every LLM iteration).
+	hasMedia := false
+	for i := range messages {
+		if len(messages[i].Media) > 0 {
+			hasMedia = true
+			break
+		}
+	}
+	if !hasMedia {
+		return messages
+	}
+
 	result := make([]providers.Message, 0, len(messages))
 	var pendingToolImages []string
+	// encoded dedups data-URL encoding within this call so the same file is not
+	// read and base64-encoded more than once.
+	encoded := make(map[string]string)
 
 	for idx, m := range messages {
 		// When leaving a tool-message block, flush any accumulated images
@@ -125,7 +175,11 @@ func resolveMediaRefs(
 			pathTags = append(pathTags, buildPathTag(mime, localPath))
 
 			if m.Role == "tool" && idx >= currentTurnStart && strings.HasPrefix(mime, "image/") {
-				dataURL := encodeImageToDataURL(localPath, mime, info, maxSize)
+				dataURL, ok := encoded[localPath]
+				if !ok {
+					dataURL = encodeImageToDataURL(localPath, mime, info, opts)
+					encoded[localPath] = dataURL
+				}
 				if dataURL != "" {
 					pendingToolImages = append(pendingToolImages, dataURL)
 				}
@@ -148,16 +202,23 @@ func resolveMediaRefs(
 	return result
 }
 
-// encodeImageToDataURL base64-encodes an image file into a data URL.
-// Returns empty string if the file exceeds maxSize or encoding fails.
-func encodeImageToDataURL(localPath, mime string, info os.FileInfo, maxSize int) string {
-	if info.Size() > int64(maxSize) {
+// encodeImageToDataURL base64-encodes an image file into a data URL, first
+// downscaling it when a vision dimension cap is configured. Returns empty
+// string if the file exceeds opts.maxSize or encoding fails.
+func encodeImageToDataURL(localPath, mime string, info os.FileInfo, opts mediaResolveOptions) string {
+	if info.Size() > int64(opts.maxSize) {
 		logger.WarnCF("agent", "Media file too large, skipping", map[string]any{
 			"path":     localPath,
 			"size":     info.Size(),
-			"max_size": maxSize,
+			"max_size": opts.maxSize,
 		})
 		return ""
+	}
+
+	if opts.maxImageDimension > 0 {
+		if dataURL, ok := downscaleToDataURL(localPath, mime, opts.maxImageDimension, opts.jpegQuality); ok {
+			return dataURL
+		}
 	}
 
 	f, err := os.Open(localPath)
