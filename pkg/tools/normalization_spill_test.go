@@ -70,7 +70,9 @@ func TestExecuteWithContext_SpillKeepsHeadAndTailPreview(t *testing.T) {
 	reg.SetWorkspace(workspace)
 	reg.SetMaxInlineResultRunes(4096)
 
-	large := "HEAD_MARKER_ALPHA " + strings.Repeat("the quick brown fox jumps over the lazy dog\n", 500) + "TAIL_MARKER_OMEGA"
+	large := "HEAD_MARKER_ALPHA " +
+		strings.Repeat("the quick brown fox jumps over the lazy dog\n", 500) +
+		"TAIL_MARKER_OMEGA"
 	reg.Register(newSpillTool("big_tool", SilentResult(large)))
 
 	result := reg.Execute(context.Background(), "big_tool", nil)

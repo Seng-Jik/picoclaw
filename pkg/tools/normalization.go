@@ -163,14 +163,18 @@ func persistLargeResultArtifact(result *ToolResult, toolName, workspace string, 
 		// dropping everything would hide actionable content and can make the
 		// model retry identically.
 		result.ForLLM = fmt.Sprintf(
-			"%s [Tool returned a large result (%d chars, %d omitted); showing a bounded preview because artifact persistence failed.]\n\n%s",
+			"%s [Tool returned a large result (%d chars, %d omitted); "+
+				"showing a bounded preview because artifact persistence failed.]\n\n%s",
 			largeResultSpillSentinel, size, omitted, preview,
 		)
 		return
 	}
 
 	result.ForLLM = fmt.Sprintf(
-		"%s [Tool returned a large result (%d chars, %d omitted); showing first %d and last %d characters.]\n\n%s\n\n💾 [Full output saved to: %s — use read_file (offset/length) to read more, or send_file to forward it.]",
+		"%s [Tool returned a large result (%d chars, %d omitted); "+
+			"showing first %d and last %d characters.]\n\n%s\n\n"+
+			"💾 [Full output saved to: %s — use read_file (offset/length) to read more, "+
+			"or send_file to forward it.]",
 		largeResultSpillSentinel, size, omitted, headRunes, tailRunes, preview, path,
 	)
 	result.ArtifactTags = append(result.ArtifactTags, "[file:"+path+"]")
