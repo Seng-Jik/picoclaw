@@ -215,6 +215,32 @@ func buildArtifactTags(store media.MediaStore, refs []string) []string {
 	return tags
 }
 
+// appendArtifactTags merges media-derived tags with any tags already present on
+// a tool result (for example the path of a spilled large-result artifact).
+// Order is preserved and duplicates are dropped.
+func appendArtifactTags(existing, added []string) []string {
+	if len(added) == 0 {
+		return existing
+	}
+	seen := make(map[string]struct{}, len(existing)+len(added))
+	merged := make([]string, 0, len(existing)+len(added))
+	for _, tag := range existing {
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		merged = append(merged, tag)
+	}
+	for _, tag := range added {
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		merged = append(merged, tag)
+	}
+	return merged
+}
+
 func buildProviderAttachments(store media.MediaStore, refs []string) []providers.Attachment {
 	if store == nil || len(refs) == 0 {
 		return nil

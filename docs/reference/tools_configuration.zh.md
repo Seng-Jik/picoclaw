@@ -39,6 +39,14 @@ PicoClaw 的工具配置位于 `config.json` 的 `tools` 字段中。
 | `filter_sensitive_data` | bool | `true` | 启用/禁用过滤 |
 | `filter_min_length` | int | `8` | 触发过滤的最小内容长度 |
 
+## 大型工具结果
+
+超过 `max_inline_result_chars`（按 Unicode 字符数，而非字节数）的工具结果不会完整注入模型上下文。PicoClaw 会将完整文本保存为 agent 工作区中的本地产物（`<workspace>/.artifacts/tool/`），并向模型返回一条简短提示以及结构化的 `[file:...]` 路径。模型随后可以用文件工具查看该产物，或用 `send_file` 转发，从而限制上下文占用。此行为与 MCP 工具已有的大文本处理一致，并适用于所有工具；产物会自动清理（早于 24 小时，或超出每个目录最新的 128 个文件）。
+
+| 配置项 | 类型 | 默认值 | 描述 |
+|--------|------|--------|------|
+| `max_inline_result_chars` | int | `16384` | 保留在上下文中的工具结果文本上限（Go rune）。更大的结果会被转存为工作区产物。设为 `0` 或负值可禁用。 |
+
 ## Web 工具
 
 Web 工具用于网页搜索和抓取。

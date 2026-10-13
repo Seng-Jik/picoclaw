@@ -22,11 +22,13 @@ type ToolEntry struct {
 }
 
 type ToolRegistry struct {
-	tools      map[string]*ToolEntry
-	mu         sync.RWMutex
-	version    atomic.Uint64 // incremented on Register/RegisterHidden for cache invalidation
-	mediaStore media.MediaStore
-	allowlist  map[string]struct{}
+	tools                map[string]*ToolEntry
+	mu                   sync.RWMutex
+	version              atomic.Uint64 // incremented on Register/RegisterHidden for cache invalidation
+	mediaStore           media.MediaStore
+	allowlist            map[string]struct{}
+	workspace            string
+	maxInlineResultRunes int
 }
 
 type mediaStoreAware interface {
@@ -160,6 +162,23 @@ func (r *ToolRegistry) SetMediaStore(store media.MediaStore) {
 			aware.SetMediaStore(store)
 		}
 	}
+}
+
+// SetWorkspace sets the workspace used to persist oversized tool-result
+// artifacts. An empty workspace disables large-result artifact persistence.
+func (r *ToolRegistry) SetWorkspace(workspace string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.workspace = strings.TrimSpace(workspace)
+}
+
+// SetMaxInlineResultRunes caps how much tool-result text stays inline in model
+// context, counted in Unicode characters. A non-positive value disables
+// large-result artifact persistence.
+func (r *ToolRegistry) SetMaxInlineResultRunes(limit int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.maxInlineResultRunes = limit
 }
 
 // PromoteTools atomically sets the TTL for multiple non-core tools.
@@ -368,12 +387,15 @@ func (r *ToolRegistry) ExecuteWithContext(
 		}
 	}
 
-	// Read the media store under the registry lock: SetMediaStore may be
-	// called concurrently (e.g. config hot reload) while tools are executing.
+	// Read the media store and result-spill settings under the registry lock:
+	// SetMediaStore may be called concurrently (e.g. config hot reload) while
+	// tools are executing.
 	r.mu.RLock()
 	mediaStore := r.mediaStore
+	workspace := r.workspace
+	maxInlineResultRunes := r.maxInlineResultRunes
 	r.mu.RUnlock()
-	result = normalizeToolResult(result, name, mediaStore, channel, chatID)
+	result = normalizeToolResult(result, name, mediaStore, channel, chatID, workspace, maxInlineResultRunes)
 
 	duration := time.Since(start)
 
@@ -516,8 +538,10 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	clone := &ToolRegistry{
-		tools:      make(map[string]*ToolEntry, len(r.tools)),
-		mediaStore: r.mediaStore,
+		tools:                make(map[string]*ToolEntry, len(r.tools)),
+		mediaStore:           r.mediaStore,
+		workspace:            r.workspace,
+		maxInlineResultRunes: r.maxInlineResultRunes,
 	}
 	if r.allowlist != nil {
 		clone.allowlist = make(map[string]struct{}, len(r.allowlist))

@@ -39,6 +39,14 @@ See [Sensitive Data Filtering](../security/sensitive_data_filtering.md) for full
 
 Tool call logs record only the argument **keys** and count, never the argument values, so secrets passed to a tool are not written to log files. The filter above applies to the content exchanged with the LLM, not to logs.
 
+## Large tool results
+
+Tool results larger than `max_inline_result_chars` (counted in Unicode characters, not bytes) are not injected into the model context in full. PicoClaw saves the full text as a local artifact in the agent workspace (`<workspace>/.artifacts/tool/`) and gives the model a short note plus a structured `[file:...]` path instead. The model can inspect the artifact with the file tools or forward it with `send_file`, keeping context usage bounded. This mirrors the large-text handling already used for MCP tools and applies to every tool; artifacts are pruned automatically (older than 24 hours, or beyond the newest 128 files per directory).
+
+| Config | Type | Default | Description |
+|--------|------|---------|-------------|
+| `max_inline_result_chars` | int | `16384` | Maximum tool-result text kept inline, in Go runes. Larger results are spilled to a workspace artifact. Set to `0` or a negative value to disable. |
+
 ## Protected local files
 
 Filesystem read tools deny `.env`, `.env.*`, `.envrc`, `.security.yml` (including its backups), `.netrc`, `.npmrc`, `.pypirc`, `.pgpass`, `.git-credentials`, and files inside `.ssh`, `.aws`, `.kube`, `.gnupg`, `.docker`, `.azure`, `.config/gh`, or `.config/gcloud` directories. Under `PICOCLAW_HOME`, reads are also denied for `auth.json`, `auth/mcp`, and `channels/weixin/context-tokens`; the default `plugin-data` root is hidden because it may contain MCP bearer-token files. Reads of `CODEX_HOME/auth.json` (default `~/.codex/auth.json`) are denied as well. Windows NT/device-namespace paths are rejected before path resolution. The check follows symlinks, hides protected entries from directory listings and file searches, and applies to local files attached through `send_file`, `load_image`, or `message`. Read allow paths do not override it.
@@ -684,6 +692,7 @@ For example:
 - `PICOCLAW_TOOLS_CRON_EXEC_TIMEOUT_MINUTES=10`
 - `PICOCLAW_TOOLS_MCP_ENABLED=true`
 - `PICOCLAW_TOOLS_MCP_MAX_INLINE_TEXT_CHARS=16384`
+- `PICOCLAW_TOOLS_MAX_INLINE_RESULT_CHARS=16384`
 
 Note: Nested map-style config (for example `tools.mcp.servers.<name>.*`) is configured in `config.json` rather than
 environment variables.

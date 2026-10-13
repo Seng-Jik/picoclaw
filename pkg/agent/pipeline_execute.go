@@ -325,7 +325,10 @@ toolLoop:
 
 					var toolResultMedia []string
 					if len(hookResult.Media) > 0 && !hookResult.ResponseHandled {
-						hookResult.ArtifactTags = buildArtifactTags(al.mediaStore, hookResult.Media)
+						hookResult.ArtifactTags = appendArtifactTags(
+							hookResult.ArtifactTags,
+							buildArtifactTags(al.mediaStore, hookResult.Media),
+						)
 						contentForLLM = hookResult.ContentForLLM()
 						if al.cfg.Tools.IsFilterSensitiveDataEnabled() {
 							contentForLLM = al.cfg.FilterSensitiveData(contentForLLM)
@@ -681,7 +684,10 @@ toolLoop:
 		}
 
 		if len(toolResult.Media) > 0 && !toolResult.ResponseHandled {
-			toolResult.ArtifactTags = buildArtifactTags(al.mediaStore, toolResult.Media)
+			toolResult.ArtifactTags = appendArtifactTags(
+				toolResult.ArtifactTags,
+				buildArtifactTags(al.mediaStore, toolResult.Media),
+			)
 		}
 
 		if !toolResult.ResponseHandled {

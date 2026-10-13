@@ -4,10 +4,13 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 )
@@ -29,6 +32,8 @@ func normalizeToolResult(
 	store media.MediaStore,
 	channel string,
 	chatID string,
+	workspace string,
+	maxInlineResultRunes int,
 ) *ToolResult {
 	if result == nil {
 		return nil
@@ -40,6 +45,9 @@ func normalizeToolResult(
 	normalized := *result
 	if len(result.Media) > 0 {
 		normalized.Media = append([]string(nil), result.Media...)
+	}
+	if len(result.ArtifactTags) > 0 {
+		normalized.ArtifactTags = append([]string(nil), result.ArtifactTags...)
 	}
 	result = &normalized
 
@@ -86,7 +94,53 @@ func normalizeToolResult(
 		result.ForLLM = "[Tool returned media content; omitted from model context and registered as a media attachment.]"
 	}
 
+	persistLargeResultArtifact(result, toolName, workspace, maxInlineResultRunes)
+
 	return result
+}
+
+// persistLargeResultArtifact spills an oversized tool result to a workspace
+// artifact so the full payload does not consume model context. It mirrors the
+// large-text handling used for MCP tools: ForLLM is replaced with a short note
+// and the artifact path is exposed via ArtifactTags. It is a no-op when the
+// result is small, the workspace is unknown, or persistence is disabled.
+func persistLargeResultArtifact(result *ToolResult, toolName, workspace string, maxRunes int) {
+	if result == nil || maxRunes <= 0 || strings.TrimSpace(workspace) == "" {
+		return
+	}
+	if result.ResponseHandled {
+		// The tool already delivered its payload to the user; the model only
+		// needs the short confirmation.
+		return
+	}
+
+	text := strings.TrimSpace(result.ForLLM)
+	size := utf8.RuneCountInString(text)
+	if text == "" || size <= maxRunes {
+		return
+	}
+
+	dir := filepath.Join(workspace, ".artifacts", "tool")
+	pattern := sanitizeIdentifierComponent(toolName) + "_*.txt"
+	path, err := toolshared.PersistTextArtifact(dir, pattern, text)
+	if err != nil {
+		logger.WarnCF("tool", "Failed to persist large tool result artifact", map[string]any{
+			"tool":  toolName,
+			"chars": size,
+			"error": err.Error(),
+		})
+		result.ForLLM = fmt.Sprintf(
+			"[Tool returned a large result (%d chars); omitted from model context because artifact persistence failed.]",
+			size,
+		)
+		return
+	}
+
+	result.ForLLM = fmt.Sprintf(
+		"[Tool returned a large result (%d chars); omitted from model context and saved as a local artifact.]",
+		size,
+	)
+	result.ArtifactTags = append(result.ArtifactTags, "[file:"+path+"]")
 }
 
 func extractInlineMediaRefs(
