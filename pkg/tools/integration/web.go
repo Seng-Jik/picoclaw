@@ -38,6 +38,12 @@ const (
 	defaultMaxChars = 50000
 	maxRedirects    = 5
 
+	// maxSearchResponseBytes caps how much of a search provider's HTTP response
+	// is buffered in memory. Search providers return compact JSON; anything
+	// larger is either an error page or a misbehaving upstream, and reading it
+	// unbounded could exhaust RAM on constrained devices.
+	maxSearchResponseBytes = 4 << 20 // 4 MiB
+
 	keenableDefaultBaseURL = "https://api.keenable.ai"
 	// keenableAppTitle identifies PicoClaw to Keenable's public (keyless)
 	// endpoint, which rejects requests without an X-Keenable-Title header.
@@ -339,7 +345,7 @@ func (p *BraveSearchProvider) Search(
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
 		_ = resp.Body.Close()
 
 		if err != nil {
@@ -472,7 +478,7 @@ func (p *TavilySearchProvider) Search(
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
 		_ = resp.Body.Close()
 
 		if err != nil {
@@ -1168,7 +1174,7 @@ func (p *DuckDuckGoSearchProvider) Search(
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}
@@ -1316,7 +1322,7 @@ func (p *PerplexitySearchProvider) Search(
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
 		_ = resp.Body.Close()
 
 		if err != nil {
