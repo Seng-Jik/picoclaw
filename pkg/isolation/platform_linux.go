@@ -273,14 +273,13 @@ func appendLinuxArgumentMounts(plan []MountRule, args []string) []MountRule {
 			continue
 		}
 		clean := filepath.Clean(path)
-		if info, err := os.Stat(clean); err == nil {
-			mode := "ro"
-			if info.IsDir() {
-				mode = "rw"
-			}
-			plan = ensureLinuxMountRule(plan, clean, clean, mode)
+		if _, err := os.Stat(clean); err == nil {
+			// Absolute path arguments are exposed read-only: a directory passed
+			// on the command line must not become a writable hole in the
+			// sandbox. Writable locations come from expose_paths or the cwd.
+			plan = ensureLinuxMountRule(plan, clean, clean, "ro")
 			if resolved, resolveErr := filepath.EvalSymlinks(clean); resolveErr == nil && resolved != clean {
-				plan = ensureLinuxMountRule(plan, resolved, resolved, mode)
+				plan = ensureLinuxMountRule(plan, resolved, resolved, "ro")
 			}
 			continue
 		} else if !errors.Is(err, os.ErrNotExist) {

@@ -32,13 +32,13 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 trap 'exit 1' HUP INT TERM
 
-asset_url=$(curl -fsSLo "$tmp/$asset" -w '%{url_effective}' "$base/releases/latest/download/$asset")
-tag=${asset_url#*/releases/download/}
-tag=${tag%%/*}
-if [ "$tag" = "$asset_url" ]; then
-  echo "Could not determine the downloaded release version" >&2
+tag_url=$(curl -fsSLo /dev/null -w '%{url_effective}' "$base/releases/latest")
+tag=${tag_url##*/}
+if [ -z "$tag" ] || [ "$tag" = "$tag_url" ]; then
+  echo "Could not determine the latest release version" >&2
   exit 1
 fi
+curl -fsSL "$base/releases/download/$tag/$asset" -o "$tmp/$asset"
 
 checksums="picoclaw_${tag#v}_checksums.txt"
 curl -fsSL "$base/releases/download/$tag/$checksums" -o "$tmp/$checksums"

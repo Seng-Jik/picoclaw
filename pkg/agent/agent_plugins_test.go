@@ -229,6 +229,52 @@ func TestPluginHookScope(t *testing.T) {
 	}
 }
 
+func TestPluginMCPHookCacheIsBounded(t *testing.T) {
+	hook := &pluginMCPHook{turnResults: make(map[string]string)}
+	for i := 0; i < maxCachedTurnResults*3; i++ {
+		hook.cacheTurnResult(fmt.Sprintf("turn-%d", i), "value")
+	}
+	hook.cacheMu.Lock()
+	defer hook.cacheMu.Unlock()
+	if len(hook.turnResults) > maxCachedTurnResults {
+		t.Fatalf("turn cache grew to %d entries", len(hook.turnResults))
+	}
+}
+
+func TestBoundedHookTextKeepsValidUTF8(t *testing.T) {
+	if got := boundedHookText("  hi  ", 100); got != "hi" {
+		t.Fatalf("trim = %q", got)
+	}
+	// "é" is two bytes; a byte limit must not leave a dangling continuation byte.
+	if got := boundedHookText("aé", 2); got != "a" {
+		t.Fatalf("truncation = %q", got)
+	}
+	if got := boundedHookText("abc", 2); got != "ab" {
+		t.Fatalf("ascii truncation = %q", got)
+	}
+}
+
+func TestRuntimeEventTurnCompletedGate(t *testing.T) {
+	completed := runtimeevents.Event{
+		Kind:    runtimeevents.KindAgentTurnEnd,
+		Payload: TurnEndPayload{Status: TurnEndStatusCompleted},
+	}
+	failed := runtimeevents.Event{
+		Kind:    runtimeevents.KindAgentTurnEnd,
+		Payload: TurnEndPayload{Status: TurnEndStatusError},
+	}
+	other := runtimeevents.Event{Kind: runtimeevents.KindAgentLLMRequest}
+	if !runtimeEventTurnCompleted(completed) {
+		t.Fatal("completed turn end was not recognized")
+	}
+	if runtimeEventTurnCompleted(failed) {
+		t.Fatal("failed turn end was treated as completed")
+	}
+	if !runtimeEventTurnCompleted(other) {
+		t.Fatal("non turn-end event must not be gated")
+	}
+}
+
 func TestOfficialMem0PluginRemoteMCPAndNativeHooks(t *testing.T) {
 	t.Setenv("MEM0_API_KEY", "test-mem0-token")
 	type searchInput struct {

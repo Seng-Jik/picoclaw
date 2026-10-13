@@ -89,6 +89,10 @@ type Capabilities struct {
 	Tools  []*PluginTool
 	Skills []skills.PluginSkill
 	Hooks  []Hook
+	// HasResources reports bundled, readable resources (valid skills or a
+	// references directory) so the host can expose the resource tool even when
+	// no skill is loaded.
+	HasResources bool
 }
 
 type Hook struct {

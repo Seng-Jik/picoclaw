@@ -719,14 +719,20 @@ func (m *Manager) reconnectServer(
 
 // Close closes all server connections
 func (m *Manager) Close() error {
-	// Use Swap to atomically set closed=true and get the previous value
-	// This prevents TOCTOU race with CallTool's closed check
+	// Set closed=true while holding the same lock CallTool holds across its
+	// closed check and wg.Add. This guarantees that once Swap returns, no
+	// CallTool can still be between the check and the Add, so wg.Wait below
+	// actually waits for every in-flight call. Setting closed without the lock
+	// would leave a TOCTOU window where a call passes the check and Adds after
+	// Wait already observed a zero counter.
+	m.mu.Lock()
 	if m.closed.Swap(true) {
+		m.mu.Unlock()
 		return nil // already closed
 	}
+	m.mu.Unlock()
 
-	// Wait for all in-flight CallTool calls to finish before closing sessions
-	// After closed=true is set, no new CallTool can start (they check closed first)
+	// Wait for all in-flight CallTool calls to finish before closing sessions.
 	m.wg.Wait()
 
 	m.mu.Lock()

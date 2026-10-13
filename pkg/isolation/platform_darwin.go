@@ -119,7 +119,9 @@ func buildDarwinSeatbeltProfile(root string, cmd *exec.Cmd, exposePaths []config
 		}
 		if info, err := os.Stat(path); err == nil {
 			if info.IsDir() {
-				addTree(path, "rw", true)
+				// Read-only: an absolute directory argument must not grant
+				// writes inside the Seatbelt sandbox.
+				addTree(path, "ro", true)
 			} else {
 				addPath(path, "ro", "literal", info.Mode().Perm()&0o111 != 0)
 			}

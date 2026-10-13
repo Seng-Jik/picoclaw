@@ -154,6 +154,8 @@ func (p *Pipeline) ExecuteTools(
 		}
 	}
 
+	feedback := newToolFeedbackBatch(al, ts, exec)
+
 toolLoop:
 	for i, tc := range normalizedToolCalls {
 		if ts.hardAbortRequested() {
@@ -211,6 +213,19 @@ toolLoop:
 				if toolReq != nil && toolReq.HookResult != nil {
 					hookResult := toolReq.HookResult
 
+					// respond bypasses approve_tool by design (used for plugin
+					// tool injection). Surface the risky case where a hook
+					// shadows a tool that is actually registered, so operators
+					// can audit which sensitive tools were answered by a hook.
+					if _, registered := ts.agent.Tools.Get(toolName); registered {
+						logger.WarnCF("agent", "Hook respond shadows a registered tool and bypasses approval",
+							map[string]any{
+								"agent_id": ts.agent.ID,
+								"tool":     toolName,
+								"channel":  ts.channel,
+							})
+					}
+
 					logger.InfoCF("agent", fmt.Sprintf("Tool call (hook respond): %s", toolName),
 						map[string]any{
 							"agent_id":  ts.agent.ID,
@@ -229,26 +244,7 @@ toolLoop:
 						},
 					)
 
-					if shouldPublishToolFeedback(al.cfg, ts) && ts.channel != "pico" {
-						toolFeedbackMaxLen := al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength()
-						toolFeedbackExplanation := toolFeedbackExplanationForToolCall(
-							exec.response,
-							tc,
-							messages,
-						)
-						feedbackMsg := utils.FormatToolFeedbackMessage(
-							toolName,
-							toolFeedbackExplanation,
-							toolFeedbackArgsPreview(toolArgs, toolFeedbackMaxLen),
-						)
-						fbCtx, fbCancel := context.WithTimeout(turnCtx, 3*time.Second)
-						_ = al.bus.PublishOutbound(fbCtx, outboundMessageForTurnWithOptions(
-							ts,
-							feedbackMsg,
-							outboundTurnMessageOptions{kind: messageKindToolFeedback},
-						))
-						fbCancel()
-					}
+					feedback.publish(turnCtx, i, tc, toolName, toolArgs, messages)
 
 					toolDuration := time.Duration(0)
 
@@ -525,26 +521,7 @@ toolLoop:
 			},
 		)
 
-		if shouldPublishToolFeedback(al.cfg, ts) && ts.channel != "pico" {
-			toolFeedbackMaxLen := al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength()
-			toolFeedbackExplanation := toolFeedbackExplanationForToolCall(
-				exec.response,
-				tc,
-				messages,
-			)
-			feedbackMsg := utils.FormatToolFeedbackMessage(
-				toolName,
-				toolFeedbackExplanation,
-				toolFeedbackArgsPreview(toolArgs, toolFeedbackMaxLen),
-			)
-			fbCtx, fbCancel := context.WithTimeout(turnCtx, 3*time.Second)
-			_ = al.bus.PublishOutbound(fbCtx, outboundMessageForTurnWithOptions(
-				ts,
-				feedbackMsg,
-				outboundTurnMessageOptions{kind: messageKindToolFeedback},
-			))
-			fbCancel()
-		}
+		feedback.publish(turnCtx, i, tc, toolName, toolArgs, messages)
 
 		toolCallID := tc.ID
 		asyncToolName := toolName
@@ -939,9 +916,9 @@ toolLoop:
 	// allResponsesHandled=false and no pending steering: continue so coordinator
 	// makes another LLM call. The tool result is in messages and the LLM will
 	// return it as finalContent in the next iteration.
-	ts.agent.Tools.TickTTL()
-	logger.DebugCF("agent", "TTL tick after tool execution", map[string]any{
-		"agent_id": ts.agent.ID, "iteration": iteration,
-	})
+	//
+	// Discovery TTL is intentionally NOT ticked here: it advances once per
+	// conversational turn in runTurn, so a tool discovered in this turn stays
+	// callable across the remaining tool-loop iterations of the same turn.
 	return ToolControlContinue
 }

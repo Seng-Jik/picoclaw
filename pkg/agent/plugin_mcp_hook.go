@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
@@ -22,7 +21,12 @@ import (
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
-const pluginMCPHookTimeout = 5 * time.Second
+const (
+	pluginMCPHookTimeout = 5 * time.Second
+	// maxCachedTurnResults bounds the per-turn memory cache so a missed
+	// turn-end event cannot grow it without limit in a long-lived process.
+	maxCachedTurnResults = 256
+)
 
 // pluginMCPHook executes a plugin's declarative MCP action at PicoClaw hook
 // points. The plugin supplies the tool and argument template; PicoClaw owns
@@ -101,6 +105,9 @@ func (h *pluginMCPHook) cacheTurnResult(turnID, result string) {
 	}
 	h.cacheMu.Lock()
 	defer h.cacheMu.Unlock()
+	if len(h.turnResults) >= maxCachedTurnResults {
+		h.turnResults = make(map[string]string, maxCachedTurnResults)
+	}
 	h.turnResults[turnID] = result
 }
 
@@ -316,8 +323,7 @@ func (h *pluginMCPHook) OnRuntimeEvent(ctx context.Context, event runtimeevents.
 	variables["user_message"] = boundedHookText(hookString(hookMapValue(payload, "UserMessage")), 6000)
 	variables["assistant_message"] = boundedHookText(hookString(hookMapValue(payload, "FinalContent")), 6000)
 	if h.completedOnly && event.Kind == runtimeevents.KindAgentTurnEnd {
-		status := fmt.Sprint(hookMapValue(payload, "Status"))
-		if !strings.EqualFold(status, string(TurnEndStatusCompleted)) {
+		if !runtimeEventTurnCompleted(event) {
 			return nil
 		}
 		if strings.TrimSpace(variables["user_message"].(string)) == "" &&
@@ -547,10 +553,7 @@ func (h *pluginMCPHook) clean(content string) string {
 func boundedHookText(content string, limit int) string {
 	content = strings.TrimSpace(content)
 	if len(content) > limit {
-		content = content[:limit]
-		for !utf8.ValidString(content) {
-			content = content[:len(content)-1]
-		}
+		content = strings.ToValidUTF8(content[:limit], "")
 	}
 	return content
 }

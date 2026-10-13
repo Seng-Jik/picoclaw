@@ -101,7 +101,7 @@ func (al *AgentLoop) ProcessHeartbeat(
 	}
 	return al.runAgentLoop(ctx, agent, processOptions{
 		Dispatch:             dispatch,
-		DefaultResponse:      defaultResponse,
+		DefaultResponse:      "",
 		EnableSummary:        false,
 		SendResponse:         false,
 		SuppressToolFeedback: true,
