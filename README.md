@@ -3,6 +3,8 @@
 
 <h1>PicoClaw: The Ultra-Lightweight Agent the Upstream No Longer Is — for RISC-V, SBCs, and Embedded Systems</h1>
 
+> PicoClaw is small on purpose. Small is not lesser. Small is enough.
+
 <h3>$10 Hardware · 10–20 MB RAM · ms Boot · Let's Go, PicoClaw!</h3>
   <p>
     <img src="https://img.shields.io/badge/Go-1.27.2+-00ADD8?style=flat&logo=go&logoColor=white" alt="Go">
