@@ -1306,8 +1306,8 @@ type ToolsConfig struct {
 	// Default: 8
 	FilterMinLength int `json:"filter_min_length" yaml:"-" env:"PICOCLAW_TOOLS_FILTER_MIN_LENGTH"`
 	// MaxInlineResultChars caps how much tool-result text stays inline in the
-	// model context. Larger results are saved as workspace artifacts and
-	// replaced with a short note plus a structured [file:...] path.
+	// model context. Larger results are saved as workspace artifacts and kept
+	// inline as a bounded head+tail preview plus a pointer to the full artifact.
 	// The limit is counted in Unicode characters (Go runes), not bytes.
 	// Default: 16384. A non-positive value disables the protection.
 	MaxInlineResultChars int                     `json:"max_inline_result_chars" yaml:"-"                env:"PICOCLAW_TOOLS_MAX_INLINE_RESULT_CHARS"`

@@ -318,6 +318,10 @@ toolLoop:
 						exec.allResponsesHandled = false
 					}
 
+					// A hook-respond result bypasses tool execution, so apply the
+					// large-result spill here too (no-op for already-bounded results).
+					ts.agent.Tools.SpillLargeResult(hookResult, toolName)
+
 					contentForLLM := hookResult.ContentForLLM()
 					if al.cfg.Tools.IsFilterSensitiveDataEnabled() {
 						contentForLLM = al.cfg.FilterSensitiveData(contentForLLM)
@@ -632,6 +636,11 @@ toolLoop:
 		if toolResult == nil {
 			toolResult = tools.ErrorResult("hook returned nil tool result")
 		}
+
+		// Re-apply the large-result spill: the registry already spilled the
+		// original result, but an AfterTool hook may have replaced it with a
+		// fresh oversized payload. Spilling here keeps every code path bounded.
+		ts.agent.Tools.SpillLargeResult(toolResult, toolName)
 
 		if len(toolResult.Media) > 0 && toolResult.ResponseHandled {
 			parts := make([]bus.MediaPart, 0, len(toolResult.Media))

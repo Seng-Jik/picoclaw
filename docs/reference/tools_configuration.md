@@ -41,11 +41,11 @@ Tool call logs record only the argument **keys** and count, never the argument v
 
 ## Large tool results
 
-Tool results larger than `max_inline_result_chars` (counted in Unicode characters, not bytes) are not injected into the model context in full. PicoClaw saves the full text as a local artifact in the agent workspace (`<workspace>/.artifacts/tool/`) and gives the model a short note plus a structured `[file:...]` path instead. The model can inspect the artifact with the file tools or forward it with `send_file`, keeping context usage bounded. This mirrors the large-text handling already used for MCP tools and applies to every tool; artifacts are pruned automatically (older than 24 hours, or beyond the newest 128 files per directory).
+Tool results larger than `max_inline_result_chars` (counted in Unicode characters, not bytes) are not injected into the model context in full. PicoClaw saves the full text as a local artifact in the agent workspace (`<workspace>/.artifacts/tool/`) and keeps a bounded **head+tail preview** inline: an honest, front-loaded truncation notice with the real number of omitted characters, then the first and last few kilobytes of the output, then a pointer to the full artifact. Keeping useful content inline means the model can usually answer without re-reading the artifact — important for content tools such as `read_file`, where re-reading a spilled artifact would spill again and loop. The artifact path is also exposed as a structured `[file:...]` tag so the model can read it (via `read_file` with `offset`/`length`) or forward it with `send_file`. The preview never removes a tool's own truncation guidance (for example `read_file`'s "call again with offset=…" hint stays in the head). This mirrors the large-text handling already used for MCP tools and applies to every tool, including results produced or replaced by an `AfterTool` hook; artifacts are pruned automatically (older than 24 hours, or beyond the newest 128 files per directory).
 
 | Config | Type | Default | Description |
 |--------|------|---------|-------------|
-| `max_inline_result_chars` | int | `16384` | Maximum tool-result text kept inline, in Go runes. Larger results are spilled to a workspace artifact. Set to `0` or a negative value to disable. |
+| `max_inline_result_chars` | int | `16384` | Maximum tool-result text kept inline, in Go runes. Larger results are spilled to a workspace artifact with a bounded head+tail preview. Set to `0` or a negative value to disable. |
 
 ## Protected local files
 

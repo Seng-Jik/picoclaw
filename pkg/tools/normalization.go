@@ -19,6 +19,21 @@ const (
 	largeBase64OmittedMessage = toolshared.LargeBase64OmittedMessage
 	inlineMediaOmittedMessage = toolshared.InlineMediaOmittedMessage
 	inlineMediaStoredMessage  = "[Tool returned inline media content (%s); omitted from model context and registered as a media attachment.]"
+
+	// largeResultSpillSentinel prefixes a ForLLM value that has already been
+	// reduced to a bounded artifact preview. Its presence makes the spill
+	// idempotent, so re-normalizing an already-spilled result (for example after
+	// an AfterTool hook) cannot truncate it a second time or write a second
+	// artifact.
+	largeResultSpillSentinel = "[picoclaw-large-tool-result]"
+
+	// largeResultPreviewHeadRunes and largeResultPreviewTailRunes bound the
+	// inline head/tail preview kept for a spilled result. Together they stay
+	// within the intended ~2-4KB preview budget: the model usually has enough
+	// content to answer without re-reading the artifact, which would otherwise
+	// re-spill and loop.
+	largeResultPreviewHeadRunes = 2048
+	largeResultPreviewTailRunes = 1024
 )
 
 var (
@@ -100,10 +115,14 @@ func normalizeToolResult(
 }
 
 // persistLargeResultArtifact spills an oversized tool result to a workspace
-// artifact so the full payload does not consume model context. It mirrors the
-// large-text handling used for MCP tools: ForLLM is replaced with a short note
-// and the artifact path is exposed via ArtifactTags. It is a no-op when the
-// result is small, the workspace is unknown, or persistence is disabled.
+// artifact so the full payload does not consume model context. Unlike a plain
+// pointer, ForLLM keeps a bounded head+tail preview plus an honest, front-loaded
+// truncation notice, and the artifact path is exposed both inline (a pointer at
+// the tail) and via ArtifactTags. Keeping useful content inline means the model
+// can usually answer from the preview instead of re-reading the artifact — which
+// for content tools such as read_file would spill again and loop. It is a no-op
+// when the result is small, already spilled, the workspace is unknown, or
+// persistence is disabled.
 func persistLargeResultArtifact(result *ToolResult, toolName, workspace string, maxRunes int) {
 	if result == nil || maxRunes <= 0 || strings.TrimSpace(workspace) == "" {
 		return
@@ -113,12 +132,18 @@ func persistLargeResultArtifact(result *ToolResult, toolName, workspace string, 
 		// needs the short confirmation.
 		return
 	}
+	if strings.Contains(result.ForLLM, largeResultSpillSentinel) {
+		// Already reduced to a bounded preview: never spill a preview again.
+		return
+	}
 
 	text := strings.TrimSpace(result.ForLLM)
 	size := utf8.RuneCountInString(text)
 	if text == "" || size <= maxRunes {
 		return
 	}
+
+	preview, omitted, headRunes, tailRunes := buildLargeResultPreview(text, size, maxRunes)
 
 	dir := filepath.Join(workspace, ".artifacts", "tool")
 	pattern := sanitizeIdentifierComponent(toolName) + "_*.txt"
@@ -129,18 +154,66 @@ func persistLargeResultArtifact(result *ToolResult, toolName, workspace string, 
 			"chars": size,
 			"error": err.Error(),
 		})
+		// Keep a bounded preview even when the full output could not be saved:
+		// dropping everything would hide actionable content and can make the
+		// model retry identically.
 		result.ForLLM = fmt.Sprintf(
-			"[Tool returned a large result (%d chars); omitted from model context because artifact persistence failed.]",
-			size,
+			"%s [Tool returned a large result (%d chars, %d omitted); showing a bounded preview because artifact persistence failed.]\n\n%s",
+			largeResultSpillSentinel, size, omitted, preview,
 		)
 		return
 	}
 
 	result.ForLLM = fmt.Sprintf(
-		"[Tool returned a large result (%d chars); omitted from model context and saved as a local artifact.]",
-		size,
+		"%s [Tool returned a large result (%d chars, %d omitted); showing first %d and last %d characters.]\n\n%s\n\n💾 [Full output saved to: %s — use read_file (offset/length) to read more, or send_file to forward it.]",
+		largeResultSpillSentinel, size, omitted, headRunes, tailRunes, preview, path,
 	)
 	result.ArtifactTags = append(result.ArtifactTags, "[file:"+path+"]")
+}
+
+// buildLargeResultPreview returns a head+tail preview of text, the number of
+// runes omitted between the two fragments, and the head/tail sizes. The preview
+// is bounded so inline context stays small while keeping the most useful parts:
+// the head (which for read_file includes its native truncation/offset guidance)
+// and the tail. The middle omission marker carries the real omitted count.
+func buildLargeResultPreview(text string, total, maxRunes int) (preview string, omitted, headRunes, tailRunes int) {
+	headBudget := largeResultPreviewHeadRunes
+	tailBudget := largeResultPreviewTailRunes
+	if headBudget+tailBudget > maxRunes {
+		// Small caps (e.g. tests): scale the preview down so it fits.
+		headBudget = maxRunes * 2 / 3
+		tailBudget = maxRunes - headBudget
+	}
+	if headBudget < 0 {
+		headBudget = 0
+	}
+	if tailBudget < 0 {
+		tailBudget = 0
+	}
+
+	runes := []rune(text)
+	// Defensive: never let the preview cover the whole text, otherwise there is
+	// nothing to omit and no reason to spill.
+	if headBudget+tailBudget >= total {
+		headBudget = total / 2
+		tailBudget = total - headBudget - 1
+		if tailBudget < 0 {
+			tailBudget = 0
+		}
+	}
+
+	headRunes = headBudget
+	tailRunes = tailBudget
+	omitted = total - headBudget - tailBudget
+
+	head := string(runes[:headBudget])
+	if tailBudget == 0 {
+		return fmt.Sprintf("%s\n\n[... %d characters truncated ...]", head, omitted),
+			omitted, headRunes, tailRunes
+	}
+	tail := string(runes[total-tailBudget:])
+	return fmt.Sprintf("%s\n\n[... %d characters truncated ...]\n\n%s", head, omitted, tail),
+		omitted, headRunes, tailRunes
 }
 
 func extractInlineMediaRefs(

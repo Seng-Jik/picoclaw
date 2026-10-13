@@ -181,6 +181,22 @@ func (r *ToolRegistry) SetMaxInlineResultRunes(limit int) {
 	r.maxInlineResultRunes = limit
 }
 
+// SpillLargeResult re-applies the large-result artifact spill to a result that a
+// hook may have produced or replaced after tool execution. Execution already
+// spills the original result, but an AfterTool (or hook-respond) result bypasses
+// that path; calling this keeps every code path bounded. It is a no-op when
+// spilling is disabled or the result is already a bounded preview.
+func (r *ToolRegistry) SpillLargeResult(result *ToolResult, toolName string) {
+	if result == nil {
+		return
+	}
+	r.mu.RLock()
+	workspace := r.workspace
+	maxInlineResultRunes := r.maxInlineResultRunes
+	r.mu.RUnlock()
+	persistLargeResultArtifact(result, toolName, workspace, maxInlineResultRunes)
+}
+
 // PromoteTools atomically sets the TTL for multiple non-core tools.
 // This prevents a concurrent TickTTL from decrementing between promotions.
 func (r *ToolRegistry) PromoteTools(names []string, ttl int) {
