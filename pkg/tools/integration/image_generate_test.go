@@ -11,8 +11,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/media"
@@ -168,5 +172,173 @@ func TestGenerateOpenRouterImage_RejectsOversized(t *testing.T) {
 	)
 	if !errors.Is(err, errGeneratedImageTooLarge) {
 		t.Fatalf("error = %v, want errGeneratedImageTooLarge", err)
+	}
+}
+
+// isolateTempDir points os.TempDir at a fresh directory so a test can assert
+// which picoclaw-generated-* files exist after the tool runs.
+func isolateTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+	t.Setenv("TMP", dir)
+	t.Setenv("TEMP", dir)
+	return dir
+}
+
+func generatedFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(dir, "picoclaw-generated-*"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	return files
+}
+
+// newProxiedImageTool returns an ImageGenerateTool whose OpenAI-compatible
+// image requests are answered by handler through the model proxy.
+func newProxiedImageTool(
+	t *testing.T,
+	model string,
+	maxSize int,
+	handler http.HandlerFunc,
+) (*ImageGenerateTool, *media.FileMediaStore) {
+	t.Helper()
+	proxy := httptest.NewServer(handler)
+	t.Cleanup(proxy.Close)
+
+	cfg := config.DefaultConfig()
+	cfg.Tools.ImageGenerate.ModelName = "image-model"
+	cfg.ModelList = []*config.ModelConfig{{
+		ModelName: "image-model",
+		Model:     model,
+		APIBase:   "http://image-model.invalid/v1",
+		Proxy:     proxy.URL,
+		APIKeys:   config.SimpleSecureStrings("key"),
+	}}
+	store := media.NewFileMediaStore()
+	t.Cleanup(func() { store.ReleaseAll("tool:image_generate:test:chat") })
+	return NewImageGenerateTool(cfg, maxSize, store), store
+}
+
+func imageResponse(image []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"data":[{"b64_json":%q}]}`, base64.StdEncoding.EncodeToString(image))
+	}
+}
+
+func TestImageGenerateStoresFileWithDetectedExtension(t *testing.T) {
+	tmp := isolateTempDir(t)
+	image := []byte("\x89PNG\r\n\x1a\npayload")
+	tool, store := newProxiedImageTool(t, "openai/gpt-image-1", config.DefaultMaxMediaSize, imageResponse(image))
+
+	result := tool.Execute(tools.WithToolContext(context.Background(), "test", "chat"), map[string]any{"prompt": "cat"})
+	if result.IsError || len(result.Media) != 1 {
+		t.Fatalf("result error = %t, media refs = %d, output = %s", result.IsError, len(result.Media), result.ForLLM)
+	}
+	path, meta, err := store.ResolveWithMeta(result.Media[0])
+	if err != nil {
+		t.Fatalf("resolve media: %v", err)
+	}
+	if filepath.Ext(path) != ".png" || meta.ContentType != "image/png" {
+		t.Fatalf("path = %q, content type = %q, want a .png image/png file", path, meta.ContentType)
+	}
+	if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, image) {
+		t.Fatalf("stored file = %q, error = %v, want the generated image", got, err)
+	}
+	if files := generatedFiles(t, tmp); len(files) != 1 || files[0] != path {
+		t.Fatalf("temp files = %v, want only %q (no leftover before the rename)", files, path)
+	}
+}
+
+func TestImageGenerateLeavesNoTempFileOnFailure(t *testing.T) {
+	png := []byte("\x89PNG\r\n\x1a\n")
+	tests := []struct {
+		name    string
+		model   string
+		maxSize int
+		handler http.HandlerFunc
+		wantErr string
+	}{
+		{
+			name:    "unsupported image format",
+			model:   "openai/gpt-image-1",
+			maxSize: config.DefaultMaxMediaSize,
+			handler: imageResponse([]byte("definitely not an image")),
+			wantErr: "unsupported image format",
+		},
+		{
+			name:    "image larger than the media limit",
+			model:   "openai/gpt-image-1",
+			maxSize: 16,
+			handler: imageResponse(append(png, bytes.Repeat([]byte("x"), 4096)...)),
+			wantErr: "exceeds the configured media size limit",
+		},
+		{
+			name:    "provider error response",
+			model:   "openai/gpt-image-1",
+			maxSize: config.DefaultMaxMediaSize,
+			handler: func(w http.ResponseWriter, _ *http.Request) { http.Error(w, "boom", http.StatusBadGateway) },
+			wantErr: "HTTP 502",
+		},
+		{
+			name:    "unsupported provider",
+			model:   "anthropic/claude-sonnet",
+			maxSize: config.DefaultMaxMediaSize,
+			handler: imageResponse(png),
+			wantErr: "not implemented for provider",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmp := isolateTempDir(t)
+			tool, _ := newProxiedImageTool(t, tt.model, tt.maxSize, tt.handler)
+
+			result := tool.Execute(
+				tools.WithToolContext(context.Background(), "test", "chat"),
+				map[string]any{"prompt": "cat"},
+			)
+			if !result.IsError || !strings.Contains(result.ForLLM, tt.wantErr) {
+				t.Fatalf(
+					"result error = %t, output = %q, want an error containing %q",
+					result.IsError, result.ForLLM, tt.wantErr,
+				)
+			}
+			if files := generatedFiles(t, tmp); len(files) != 0 {
+				t.Fatalf("leftover temp files: %v", files)
+			}
+		})
+	}
+}
+
+func TestImageGenerateResponseLimitFollowsMediaLimit(t *testing.T) {
+	// A small media limit must shrink the buffered response, not fall back to a
+	// large fixed floor.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte("x"), 8<<20))
+	}))
+	defer server.Close()
+
+	tool := NewImageGenerateTool(nil, 1024, nil)
+	_, err := tool.postJSON(context.Background(), server.Client(), server.URL, "", "", nil)
+	if err == nil || !strings.Contains(err.Error(), "exceeds the configured media size limit") {
+		t.Fatalf("postJSON error = %v, want the media size limit error", err)
+	}
+}
+
+func TestImageSink_RejectsOversizedStream(t *testing.T) {
+	// downloadImage copies the HTTP body into the sink with io.Copy; whatever the
+	// chunking, exactly `limit` bytes may land on disk and the next byte fails.
+	var buf bytes.Buffer
+	sink := newImageSink(&buf, 4096)
+	_, err := io.Copy(sink, iotest.OneByteReader(bytes.NewReader(bytes.Repeat([]byte("x"), 5000))))
+	if !errors.Is(err, errGeneratedImageTooLarge) {
+		t.Fatalf("error = %v, want errGeneratedImageTooLarge", err)
+	}
+	if buf.Len() != 4096 || sink.n != 4096 {
+		t.Fatalf("wrote %d bytes (sink counted %d), want exactly the 4096-byte limit", buf.Len(), sink.n)
+	}
+	if len(sink.header) != imageHeaderSniffLen {
+		t.Fatalf("header length = %d, want %d", len(sink.header), imageHeaderSniffLen)
 	}
 }
