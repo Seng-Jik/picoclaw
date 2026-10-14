@@ -241,6 +241,79 @@ func TestCronService_ComputeNextRun(t *testing.T) {
 	}
 }
 
+func TestCronService_AdvanceNextRunAnchorsToScheduledTime(t *testing.T) {
+	cs, path := setupService(nil)
+	defer os.Remove(path)
+
+	now := time.Now().UnixMilli()
+	every := int64(1000)
+	scheduled := now - 100 // job fired 100ms late
+	job := &CronJob{
+		Enabled:  true,
+		Schedule: CronSchedule{Kind: "every", EveryMS: &every},
+		State:    CronJobState{NextRunAtMS: &scheduled},
+	}
+
+	cs.advanceNextRun(job, now)
+
+	if job.State.NextRunAtMS == nil {
+		t.Fatal("expected next run")
+	}
+	want := scheduled + every
+	if *job.State.NextRunAtMS != want {
+		t.Fatalf(
+			"next run = %d, want anchored %d (drift-free); now+every would be %d",
+			*job.State.NextRunAtMS, want, now+every,
+		)
+	}
+}
+
+func TestCronService_AdvanceNextRunReanchorsAfterGap(t *testing.T) {
+	cs, path := setupService(nil)
+	defer os.Remove(path)
+
+	now := time.Now().UnixMilli()
+	every := int64(1000)
+	stale := now - 10_000 // far behind, e.g. after downtime
+	job := &CronJob{
+		Enabled:  true,
+		Schedule: CronSchedule{Kind: "every", EveryMS: &every},
+		State:    CronJobState{NextRunAtMS: &stale},
+	}
+
+	cs.advanceNextRun(job, now)
+
+	if job.State.NextRunAtMS == nil {
+		t.Fatal("expected next run")
+	}
+	if *job.State.NextRunAtMS <= now {
+		t.Fatalf("expected re-anchored future run, got %d (now %d)", *job.State.NextRunAtMS, now)
+	}
+}
+
+func TestCronService_ComputeNextRunTimezone(t *testing.T) {
+	cs, path := setupService(nil)
+	defer os.Remove(path)
+
+	now := time.Date(2024, 1, 1, 12, 0, 0, 0, time.UTC).UnixMilli()
+
+	sched := CronSchedule{Kind: "cron", Expr: "0 9 * * *", TZ: "America/New_York"}
+	got := cs.computeNextRun(&sched, now)
+	if got == nil {
+		t.Fatal("expected next run for valid timezone")
+	}
+	// 09:00 EST (UTC-5) on 2024-01-01 is 14:00 UTC.
+	want := time.Date(2024, 1, 1, 14, 0, 0, 0, time.UTC).UnixMilli()
+	if *got != want {
+		t.Fatalf("next run = %s, want %s", time.UnixMilli(*got).UTC(), time.UnixMilli(want).UTC())
+	}
+
+	invalid := CronSchedule{Kind: "cron", Expr: "0 9 * * *", TZ: "Not/AZone"}
+	if cs.computeNextRun(&invalid, now) != nil {
+		t.Fatal("expected nil next run for invalid timezone")
+	}
+}
+
 // 3. Test Execution Flow
 func TestCronService_ExecutionFlow(t *testing.T) {
 	var mu sync.Mutex
@@ -356,6 +429,212 @@ func TestCronService_PersistenceIntegrity(t *testing.T) {
 	err := cs3.loadStore()
 	if err == nil {
 		t.Error("Should return error when loading invalid JSON")
+	}
+}
+
+func TestCronService_SlowHandlerDoesNotBlockScheduler(t *testing.T) {
+	var mu sync.Mutex
+	fires := 0
+	handler := func(job *CronJob) (string, error) {
+		time.Sleep(200 * time.Millisecond)
+		mu.Lock()
+		fires++
+		mu.Unlock()
+		return "ok", nil
+	}
+
+	cs, path := setupService(handler)
+	defer os.Remove(path)
+
+	if err := cs.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer cs.Stop()
+
+	everyMS := int64(50)
+	if _, err := cs.AddJob(
+		"Slow",
+		CronSchedule{Kind: "every", EveryMS: &everyMS},
+		"msg",
+		"cli",
+		"direct",
+	); err != nil {
+		t.Fatalf("AddJob failed: %v", err)
+	}
+
+	time.Sleep(1200 * time.Millisecond)
+
+	mu.Lock()
+	got := fires
+	mu.Unlock()
+	if got < 10 {
+		t.Fatalf("slow handler blocked the scheduler: only %d fires in 1.2s (want >=10)", got)
+	}
+}
+
+func TestCronService_HandlerPanicKeepsScheduleAlive(t *testing.T) {
+	handler := func(job *CronJob) (string, error) {
+		panic("boom")
+	}
+
+	cs, path := setupService(handler)
+	defer os.Remove(path)
+
+	if err := cs.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer cs.Stop()
+
+	everyMS := int64(30)
+	job, err := cs.AddJob("Panicky", CronSchedule{Kind: "every", EveryMS: &everyMS}, "msg", "cli", "direct")
+	if err != nil {
+		t.Fatalf("AddJob failed: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		current, ok := cs.GetJob(job.ID)
+		if ok && current.State.LastStatus == "error" {
+			if current.State.NextRunAtMS == nil {
+				t.Fatal("panic left recurring job with nil next run")
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("panicking job never recorded an error status")
+}
+
+func TestCronService_SetOnJobConcurrentWithExecution(t *testing.T) {
+	cs, path := setupService(func(job *CronJob) (string, error) { return "", nil })
+	defer os.Remove(path)
+
+	if err := cs.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer cs.Stop()
+
+	everyMS := int64(1)
+	if _, err := cs.AddJob("Tick", CronSchedule{Kind: "every", EveryMS: &everyMS}, "m", "cli", "direct"); err != nil {
+		t.Fatalf("AddJob failed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for range 200 {
+			cs.SetOnJob(func(job *CronJob) (string, error) { return "ok", nil })
+		}
+	}()
+	time.Sleep(500 * time.Millisecond)
+	wg.Wait()
+}
+
+func TestCronService_StartupFinalizesExpiredOneTimeJobs(t *testing.T) {
+	cs, path := setupService(nil)
+	defer os.Remove(path)
+
+	now := time.Now().UnixMilli()
+	past := now - 3_600_000
+	every := int64(60_000)
+
+	expired, err := cs.AddJob("Expired", CronSchedule{Kind: "at", AtMS: &past}, "m", "cli", "direct")
+	if err != nil {
+		t.Fatalf("AddJob failed: %v", err)
+	}
+	if _, err := cs.AddJob(
+		"Recurring",
+		CronSchedule{Kind: "every", EveryMS: &every},
+		"m",
+		"cli",
+		"direct",
+	); err != nil {
+		t.Fatalf("AddJob failed: %v", err)
+	}
+
+	cs.recomputeNextRuns()
+
+	jobs := cs.ListJobs(true)
+	for _, job := range jobs {
+		if job.ID == expired.ID {
+			t.Fatalf("expired one-time job was neither dropped nor finalized: %+v", job)
+		}
+	}
+	if len(jobs) != 1 || jobs[0].Name != "Recurring" || jobs[0].State.NextRunAtMS == nil {
+		t.Fatalf("recurring job not preserved correctly: %+v", jobs)
+	}
+}
+
+func TestCronService_ListJobsReturnsCopies(t *testing.T) {
+	cs, path := setupService(nil)
+	defer os.Remove(path)
+
+	every := int64(60_000)
+	cs.AddJob("a", CronSchedule{Kind: "every", EveryMS: &every}, "m", "cli", "d")
+	cs.AddJob("b", CronSchedule{Kind: "every", EveryMS: &every}, "m", "cli", "d")
+
+	jobs := cs.ListJobs(true)
+	if len(jobs) != 2 {
+		t.Fatalf("want 2 jobs, got %d", len(jobs))
+	}
+	jobs[0].Name = "mutated"
+	if jobs[0].State.NextRunAtMS != nil {
+		*jobs[0].State.NextRunAtMS = 1
+	}
+	if jobs[0].Schedule.EveryMS != nil {
+		*jobs[0].Schedule.EveryMS = 1
+	}
+
+	again := cs.ListJobs(true)
+	if again[0].Name == "mutated" {
+		t.Fatal("ListJobs aliases the internal store (name mutation leaked)")
+	}
+	if again[0].State.NextRunAtMS != nil && *again[0].State.NextRunAtMS == 1 {
+		t.Fatal("ListJobs aliases state pointers")
+	}
+	if again[0].Schedule.EveryMS != nil && *again[0].Schedule.EveryMS == 1 {
+		t.Fatal("ListJobs aliases schedule pointers")
+	}
+}
+
+func TestCronService_EnableJobReturnsCopy(t *testing.T) {
+	cs, path := setupService(nil)
+	defer os.Remove(path)
+
+	every := int64(60_000)
+	j, err := cs.AddJob("orig", CronSchedule{Kind: "every", EveryMS: &every}, "m", "cli", "d")
+	if err != nil {
+		t.Fatalf("AddJob failed: %v", err)
+	}
+
+	ret := cs.EnableJob(j.ID, true)
+	if ret == nil {
+		t.Fatal("EnableJob returned nil")
+	}
+	ret.Name = "HACKED"
+
+	got, ok := cs.GetJob(j.ID)
+	if !ok {
+		t.Fatal("job not found")
+	}
+	if got.Name == "HACKED" {
+		t.Fatal("EnableJob returns a live internal pointer (mutation leaked into store)")
+	}
+}
+
+func TestCronService_NotifyNotLostWithoutReceiver(t *testing.T) {
+	cs, path := setupService(nil)
+	defer os.Remove(path)
+
+	// No scheduler loop is running, so notify's send must be buffered rather
+	// than silently dropped.
+	cs.notify()
+
+	select {
+	case <-cs.wakeChan:
+	default:
+		t.Fatal("notify was dropped because wakeChan was unbuffered")
 	}
 }
 

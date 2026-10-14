@@ -72,7 +72,7 @@ func NewCronService(storePath string, onJob JobHandler) *CronService {
 		storePath: storePath,
 		onJob:     onJob,
 		gronx:     gronx.New(),
-		wakeChan:  make(chan struct{}),
+		wakeChan:  make(chan struct{}, 1),
 	}
 	// Initialize and load store on creation
 	cs.loadStore()
@@ -98,7 +98,9 @@ func (cs *CronService) Start() error {
 
 	cs.stopChan = make(chan struct{})
 	if cs.wakeChan == nil {
-		cs.wakeChan = make(chan struct{})
+		// Buffered so a notify() that races with the loop recomputing its
+		// wake time is not lost.
+		cs.wakeChan = make(chan struct{}, 1)
 	}
 	cs.running = true
 	go cs.runLoop(cs.stopChan)
@@ -187,15 +189,15 @@ func (cs *CronService) checkJobs() {
 		}
 	}
 
-	// Reset next run for due jobs before unlocking to avoid duplicate execution.
-	dueMap := make(map[string]bool, len(dueJobIDs))
-	for _, jobID := range dueJobIDs {
-		dueMap[jobID] = true
-	}
+	// Advance the schedule for due jobs synchronously before unlocking. This
+	// keeps the scheduler loop's wake time valid while the handler runs in a
+	// goroutine, and prevents duplicate execution.
 	for i := range cs.store.Jobs {
-		if dueMap[cs.store.Jobs[i].ID] {
-			cs.store.Jobs[i].State.NextRunAtMS = nil
+		job := &cs.store.Jobs[i]
+		if job.State.NextRunAtMS == nil || *job.State.NextRunAtMS > now {
+			continue
 		}
+		cs.advanceNextRun(job, now)
 	}
 
 	if err := cs.saveStoreUnsafe(); err != nil {
@@ -204,9 +206,17 @@ func (cs *CronService) checkJobs() {
 
 	cs.mu.Unlock()
 
-	// Execute jobs outside lock.
+	// Execute jobs outside the lock, each in its own goroutine so a slow
+	// handler does not block the scheduler loop or other due jobs.
 	for _, jobID := range dueJobIDs {
-		cs.executeJobByID(jobID)
+		go func(id string) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[cron] recovered panic while executing job %s: %v", id, r)
+				}
+			}()
+			cs.executeJobByID(id)
+		}(jobID)
 	}
 }
 
@@ -215,6 +225,7 @@ func (cs *CronService) executeJobByID(jobID string) {
 
 	cs.mu.RLock()
 	var callbackJob *CronJob
+	onJob := cs.onJob
 	for i := range cs.store.Jobs {
 		job := &cs.store.Jobs[i]
 		if job.ID == jobID {
@@ -238,8 +249,17 @@ func (cs *CronService) executeJobByID(jobID string) {
 		err     error
 		skipped bool
 	)
-	if cs.onJob != nil {
-		_, err = cs.onJob(callbackJob)
+	if onJob != nil {
+		// Isolate handler panics so the job state is still updated and the
+		// schedule remains alive instead of being left with a nil next run.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("job handler panicked: %v", r)
+				}
+			}()
+			_, err = onJob(callbackJob)
+		}()
 	} else {
 		skipped = true
 	}
@@ -278,7 +298,8 @@ func (cs *CronService) executeJobByID(jobID string) {
 		job.State.LastError = ""
 	}
 
-	// Compute next run time
+	// Recurring schedules were already advanced in checkJobs; only one-time
+	// jobs need their lifecycle finalized here.
 	var nextRunStr string
 	if job.Schedule.Kind == "at" {
 		if job.DeleteAfterRun {
@@ -289,14 +310,10 @@ func (cs *CronService) executeJobByID(jobID string) {
 			job.State.NextRunAtMS = nil
 			nextRunStr = "(disabled)"
 		}
+	} else if job.State.NextRunAtMS != nil {
+		nextRunStr = time.UnixMilli(*job.State.NextRunAtMS).Format("2006-01-02 15:04:05")
 	} else {
-		nextRun := cs.computeNextRun(&job.Schedule, time.Now().UnixMilli())
-		job.State.NextRunAtMS = nextRun
-		if nextRun != nil {
-			nextRunStr = time.UnixMilli(*nextRun).Format("2006-01-02 15:04:05")
-		} else {
-			nextRunStr = "(none)"
-		}
+		nextRunStr = "(none)"
 	}
 
 	switch {
@@ -314,6 +331,30 @@ func (cs *CronService) executeJobByID(jobID string) {
 	if err := cs.saveStoreUnsafe(); err != nil {
 		log.Printf("[cron] failed to save store: %v", err)
 	}
+}
+
+// advanceNextRun moves a due job to its next occurrence. Recurring jobs are
+// anchored to their previously scheduled time so handler duration and loop
+// wake lateness do not accumulate drift. If the scheduled time is so far in
+// the past that the next occurrence already elapsed (e.g. after downtime), it
+// re-anchors to now to avoid a catch-up burst.
+func (cs *CronService) advanceNextRun(job *CronJob, nowMS int64) {
+	if job.Schedule.Kind == "at" {
+		// One-time jobs are finalized by executeJobByID.
+		job.State.NextRunAtMS = nil
+		return
+	}
+
+	anchor := nowMS
+	if job.State.NextRunAtMS != nil {
+		anchor = *job.State.NextRunAtMS
+	}
+
+	next := cs.computeNextRun(&job.Schedule, anchor)
+	if next != nil && *next <= nowMS {
+		next = cs.computeNextRun(&job.Schedule, nowMS)
+	}
+	job.State.NextRunAtMS = next
 }
 
 func (cs *CronService) computeNextRun(schedule *CronSchedule, nowMS int64) *int64 {
@@ -334,8 +375,22 @@ func (cs *CronService) computeNextRun(schedule *CronSchedule, nowMS int64) *int6
 			return nil
 		}
 
-		// Use gronx to calculate next run time
+		// Use gronx to calculate next run time, honoring the schedule timezone
+		// when provided. gronx computes in the location of the reference time,
+		// so evaluate in the target location and return an absolute instant.
 		now := time.UnixMilli(nowMS)
+		if schedule.TZ != "" {
+			loc, err := time.LoadLocation(schedule.TZ)
+			if err != nil {
+				log.Printf(
+					"[cron] invalid timezone '%s' for expr '%s': %v",
+					schedule.TZ, schedule.Expr, err,
+				)
+				return nil
+			}
+			now = now.In(loc)
+		}
+
 		nextTime, err := gronx.NextTickAfter(schedule.Expr, now, false)
 		if err != nil {
 			log.Printf("[cron] failed to compute next run for expr '%s': %v", schedule.Expr, err)
@@ -361,12 +416,34 @@ func (cs *CronService) notify() {
 
 func (cs *CronService) recomputeNextRuns() {
 	now := time.Now().UnixMilli()
+	kept := cs.store.Jobs[:0]
 	for i := range cs.store.Jobs {
 		job := &cs.store.Jobs[i]
+
+		if job.Enabled && job.Schedule.Kind == "at" &&
+			(job.Schedule.AtMS == nil || *job.Schedule.AtMS <= now) {
+			// The one-time schedule elapsed while the service was down; it can
+			// never fire again. Finalize it instead of leaving an enabled job
+			// with a nil next run that the scheduler will ignore forever.
+			if job.DeleteAfterRun {
+				log.Printf(
+					"[cron] dropping one-time job '%s' (id: %s) whose scheduled time elapsed before startup",
+					job.Name, job.ID,
+				)
+				continue
+			}
+			job.Enabled = false
+			job.State.NextRunAtMS = nil
+			kept = append(kept, *job)
+			continue
+		}
+
 		if job.Enabled {
 			job.State.NextRunAtMS = cs.computeNextRun(&job.Schedule, now)
 		}
+		kept = append(kept, *job)
 	}
+	cs.store.Jobs = kept
 }
 
 func (cs *CronService) getNextWakeMS() *int64 {
@@ -589,7 +666,8 @@ func (cs *CronService) EnableJob(jobID string, enabled bool) *CronJob {
 
 			cs.notify()
 
-			return job
+			updated := cloneCronJob(*job)
+			return &updated
 		}
 	}
 
@@ -600,18 +678,14 @@ func (cs *CronService) ListJobs(includeDisabled bool) []CronJob {
 	cs.mu.RLock()
 	defer cs.mu.RUnlock()
 
-	if includeDisabled {
-		return cs.store.Jobs
-	}
-
-	var enabled []CronJob
+	jobs := make([]CronJob, 0, len(cs.store.Jobs))
 	for _, job := range cs.store.Jobs {
-		if job.Enabled {
-			enabled = append(enabled, job)
+		if !includeDisabled && !job.Enabled {
+			continue
 		}
+		jobs = append(jobs, cloneCronJob(job))
 	}
-
-	return enabled
+	return jobs
 }
 
 func (cs *CronService) Status() map[string]any {
