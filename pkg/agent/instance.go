@@ -123,9 +123,7 @@ func NewAgentInstance(
 	toolsRegistry := tools.NewToolRegistry()
 	toolsRegistry.SetAllowlist(agentToolAllowlist)
 	toolsRegistry.SetWorkspace(workspace)
-	if cfg != nil {
-		toolsRegistry.SetMaxInlineResultRunes(cfg.Tools.GetMaxInlineResultChars())
-	}
+	toolsRegistry.SetMaxInlineResultRunes(cfg.Tools.GetMaxInlineResultChars())
 
 	if cfg.Tools.IsToolEnabled("todo") {
 		toolsRegistry.Register(tools.NewTodoTool())
