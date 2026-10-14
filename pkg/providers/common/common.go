@@ -526,10 +526,17 @@ func AsInt(v any) (int, bool) {
 //
 // The HTTP transport closes the returned reader once the request is sent, which
 // unblocks the producer goroutine if it is still writing.
+//
+// An encoding error is delivered to the reader as a read error, wrapped with
+// "serializing request body" since it no longer surfaces before the request is
+// sent the way a json.Marshal error did.
 func NewStreamingJSONReader(v any) io.ReadCloser {
 	pr, pw := io.Pipe()
 	go func() {
 		err := json.NewEncoder(pw).Encode(v)
+		if err != nil {
+			err = fmt.Errorf("serializing request body: %w", err)
+		}
 		_ = pw.CloseWithError(err)
 	}()
 	return pr

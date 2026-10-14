@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -829,6 +830,41 @@ func TestNewStreamingJSONReader_RoundTrip(t *testing.T) {
 	}
 	if got["n"] != float64(3) {
 		t.Fatalf("n = %v, want 3", got["n"])
+	}
+}
+
+func TestNewStreamingJSONReader_EncodeErrorReachesReader(t *testing.T) {
+	_, err := io.ReadAll(NewStreamingJSONReader(map[string]any{"bad": make(chan int)}))
+	if err == nil {
+		t.Fatal("expected an encoding error from the reader")
+	}
+	if !strings.Contains(err.Error(), "serializing request body") {
+		t.Errorf("error %q lacks the serializing request body context", err)
+	}
+	var unsupported *json.UnsupportedTypeError
+	if !errors.As(err, &unsupported) {
+		t.Errorf("error %q does not wrap *json.UnsupportedTypeError", err)
+	}
+}
+
+func TestNewStreamingJSONReader_EncodeErrorFailsRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	req, err := NewJSONRequest(context.Background(), http.MethodPost, server.URL, map[string]any{"bad": make(chan int)})
+	if err != nil {
+		t.Fatalf("NewJSONRequest: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("expected Do to fail on an unencodable body")
+	}
+	if !strings.Contains(err.Error(), "serializing request body") {
+		t.Errorf("Do error %q lacks the serializing request body context", err)
 	}
 }
 
