@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // countingBody is an io.ReadCloser that yields a large, bounded number of
@@ -115,5 +116,42 @@ func TestSearchProviders_ClampResponseSize(t *testing.T) {
 				t.Fatalf("provider read %d bytes from the response, want <= %d", body.read, limit)
 			}
 		})
+	}
+}
+
+// TestSearchProviders_TruncateErrorBody verifies that a large upstream error
+// body is not echoed in full into the returned error.
+func TestSearchProviders_TruncateErrorBody(t *testing.T) {
+	body := strings.Repeat("e", 100*maxErrorBodyBytes)
+	client := &http.Client{
+		Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    &http.Request{},
+			}, nil
+		}),
+	}
+	p := &BraveSearchProvider{keyPool: NewAPIKeyPool([]string{"test-key"}), client: client}
+
+	_, err := p.Search(context.Background(), "picoclaw", 5, "")
+	if err == nil {
+		t.Fatal("Search error = nil, want an API error")
+	}
+	if got, limit := len(err.Error()), 2*maxErrorBodyBytes; got > limit {
+		t.Fatalf("error is %d bytes, want <= %d", got, limit)
+	}
+}
+
+func TestErrorBody_KeepsValidUTF8(t *testing.T) {
+	// A multi-byte rune straddling the cut must be dropped, not split.
+	body := []byte(strings.Repeat("a", maxErrorBodyBytes-1) + "é" + "tail")
+	got := errorBody(body)
+	if !utf8.ValidString(got) {
+		t.Fatalf("errorBody returned invalid UTF-8: %q", got[len(got)-8:])
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("errorBody = %q..., want a trailing ellipsis", got[:8])
 	}
 }
