@@ -1996,40 +1996,52 @@ func TestNewEngineAppliesPragmasToEveryConnection(t *testing.T) {
 	defer eng.Close()
 
 	ctx := context.Background()
-	// Hold every pooled connection at once so the pool must open distinct ones.
-	// The pool size is bounded (sqliteMaxOpenConns), so hold exactly that many.
-	conns := sqliteMaxOpenConns
-	held := make([]*sql.Conn, 0, conns)
-	for i := 0; i < conns; i++ {
-		c, connErr := eng.store.db.Conn(ctx)
-		if connErr != nil {
-			t.Fatalf("Conn %d: %v", i, connErr)
+	// checkRound holds every pooled connection at once (the pool is bounded, so
+	// that is the most it can hand out) and checks the pragmas on each.
+	checkRound := func(round int) {
+		held := make([]*sql.Conn, 0, sqliteMaxOpenConns)
+		defer func() {
+			for _, c := range held {
+				_ = c.Close()
+			}
+		}()
+		for i := 0; i < sqliteMaxOpenConns; i++ {
+			c, connErr := eng.store.db.Conn(ctx)
+			if connErr != nil {
+				t.Fatalf("round %d conn %d: %v", round, i, connErr)
+			}
+			held = append(held, c)
 		}
-		defer c.Close()
-		held = append(held, c)
+
+		for i, c := range held {
+			var busy, synchronous, tempStore int
+			if scanErr := c.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busy); scanErr != nil {
+				t.Fatalf("round %d conn %d busy_timeout: %v", round, i, scanErr)
+			}
+			if busy != sqliteBusyTimeoutMS {
+				t.Errorf("round %d conn %d busy_timeout = %d, want %d", round, i, busy, sqliteBusyTimeoutMS)
+			}
+			if scanErr := c.QueryRowContext(ctx, "PRAGMA synchronous").Scan(&synchronous); scanErr != nil {
+				t.Fatalf("round %d conn %d synchronous: %v", round, i, scanErr)
+			}
+			if synchronous != 1 { // 1 == NORMAL
+				t.Errorf("round %d conn %d synchronous = %d, want 1 (NORMAL)", round, i, synchronous)
+			}
+			if scanErr := c.QueryRowContext(ctx, "PRAGMA temp_store").Scan(&tempStore); scanErr != nil {
+				t.Fatalf("round %d conn %d temp_store: %v", round, i, scanErr)
+			}
+			if tempStore != sqliteTempStoreFile {
+				t.Errorf("round %d conn %d temp_store = %d, want %d (FILE)", round, i, tempStore, sqliteTempStoreFile)
+			}
+		}
 	}
 
-	for i, c := range held {
-		var busy, synchronous, tempStore int
-		if scanErr := c.QueryRowContext(ctx, "PRAGMA busy_timeout").Scan(&busy); scanErr != nil {
-			t.Fatalf("conn %d busy_timeout: %v", i, scanErr)
-		}
-		if busy != sqliteBusyTimeoutMS {
-			t.Errorf("conn %d busy_timeout = %d, want %d", i, busy, sqliteBusyTimeoutMS)
-		}
-		if scanErr := c.QueryRowContext(ctx, "PRAGMA synchronous").Scan(&synchronous); scanErr != nil {
-			t.Fatalf("conn %d synchronous: %v", i, scanErr)
-		}
-		if synchronous != 1 { // 1 == NORMAL
-			t.Errorf("conn %d synchronous = %d, want 1 (NORMAL)", i, synchronous)
-		}
-		if scanErr := c.QueryRowContext(ctx, "PRAGMA temp_store").Scan(&tempStore); scanErr != nil {
-			t.Fatalf("conn %d temp_store: %v", i, scanErr)
-		}
-		if tempStore != sqliteTempStoreFile {
-			t.Errorf("conn %d temp_store = %d, want %d (FILE)", i, tempStore, sqliteTempStoreFile)
-		}
-	}
+	checkRound(1)
+
+	// Drop the idle connections so the next round runs on freshly opened ones:
+	// pragmas must come from the DSN, not from state a reused connection kept.
+	eng.store.db.SetMaxIdleConns(0)
+	checkRound(2)
 }
 
 // TestNewEngineBoundsConnectionPool verifies the pool is bounded so the
