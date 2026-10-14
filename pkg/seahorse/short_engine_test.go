@@ -2045,6 +2045,42 @@ func TestNewEngineBoundsConnectionPool(t *testing.T) {
 	}
 }
 
+// TestGetAllSessionStatusesDoesNotNeedSecondConnectionWhileScanning guards the
+// bounded pool: an open cursor pins one connection, so running the per-session
+// queries inside the scan loop needs a second one. With another caller holding
+// all but one pooled connection, that second acquisition blocks forever.
+func TestGetAllSessionStatusesDoesNotNeedSecondConnectionWhileScanning(t *testing.T) {
+	eng, err := NewEngine(Config{DBPath: filepath.Join(t.TempDir(), "status.db")}, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	defer eng.Close()
+
+	ctx := context.Background()
+	if _, err = eng.store.GetOrCreateConversation(ctx, "test:status"); err != nil {
+		t.Fatalf("GetOrCreateConversation: %v", err)
+	}
+
+	// Leave exactly one pooled connection free for the call under test.
+	for i := 0; i < sqliteMaxOpenConns-1; i++ {
+		c, connErr := eng.store.db.Conn(ctx)
+		if connErr != nil {
+			t.Fatalf("Conn %d: %v", i, connErr)
+		}
+		defer c.Close()
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	statuses, err := eng.store.GetAllSessionStatuses(callCtx)
+	if err != nil {
+		t.Fatalf("GetAllSessionStatuses: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("got %d statuses, want 1 (per-session query starved for a connection)", len(statuses))
+	}
+}
+
 func TestSQLiteDSN(t *testing.T) {
 	if got, want := sqliteDSN("/tmp/a.db"),
 		"/tmp/a.db?_busy_timeout=5000&_pragma=synchronous(NORMAL)&_pragma=temp_store(1)"; got != want {
