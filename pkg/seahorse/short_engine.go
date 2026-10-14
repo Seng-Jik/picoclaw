@@ -105,9 +105,12 @@ const sqliteBusyTimeoutMS = 5000
 const (
 	// sqliteMaxOpenConns bounds the connection pool. The pure-Go SQLite driver
 	// keeps a page cache per connection, so an unbounded pool lets memory grow
-	// with concurrent load. SQLite already serializes writers and WAL supports
-	// concurrent readers, so a small pool is sufficient and keeps the cache
-	// footprint predictable on constrained devices.
+	// with concurrent load. SQLite serializes writers, and in WAL mode a reader
+	// does not block the writer, so two connections let one writer run next to
+	// one reader (e.g. compaction alongside context assembly). Further
+	// concurrent callers queue for a free connection, bounded by their context,
+	// instead of opening another page cache, which keeps the memory footprint
+	// predictable on constrained devices.
 	sqliteMaxOpenConns = 2
 
 	// sqliteTempStoreFile tells SQLite to spill temporary tables and sort
