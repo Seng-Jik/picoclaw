@@ -1,6 +1,9 @@
 package memlimit
 
-import "testing"
+import (
+	"runtime/debug"
+	"testing"
+)
 
 func TestMemoryLimitBytes(t *testing.T) {
 	tests := []struct {
@@ -44,6 +47,16 @@ func TestGCPercent(t *testing.T) {
 }
 
 func TestApply_DoesNotPanic(t *testing.T) {
+	// Apply mutates process-wide runtime settings that t.Setenv does not
+	// restore, so put them back once the test is done.
+	prevLimit := debug.SetMemoryLimit(-1) // a negative input only reads the limit
+	prevGC := debug.SetGCPercent(100)
+	debug.SetGCPercent(prevGC)
+	t.Cleanup(func() {
+		debug.SetMemoryLimit(prevLimit)
+		debug.SetGCPercent(prevGC)
+	})
+
 	for _, tt := range []struct {
 		limit string
 		gogc  string
