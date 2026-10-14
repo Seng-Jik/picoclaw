@@ -113,6 +113,28 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args map[string]any) *t
 		return tools.ErrorResult("aspect_ratio must be square, landscape, or portrait")
 	}
 
+	apiKey := modelCfg.APIKey()
+	var generate func(dst io.Writer) error
+	switch protocol {
+	case "openai":
+		generate = func(dst io.Writer) error {
+			return t.generateOpenAIImage(ctx, client, apiBase, apiKey, modelID, prompt, aspect, dst)
+		}
+	case "gemini":
+		generate = func(dst io.Writer) error {
+			return t.generateGeminiImage(ctx, client, apiBase, apiKey, modelID, prompt, aspect, dst)
+		}
+	case "openrouter":
+		generate = func(dst io.Writer) error {
+			return t.generateOpenRouterImage(ctx, client, apiBase, apiKey, modelID, prompt, dst)
+		}
+	default:
+		return tools.ErrorResult(fmt.Sprintf(
+			"image generation is not implemented for provider %q; select an OpenAI, Gemini, or OpenRouter image model",
+			protocol,
+		))
+	}
+
 	// Write the decoded image straight to disk through a size-bounded sink, so
 	// the decoded bytes are never held in memory alongside the base64 payload.
 	file, err := os.CreateTemp("", "picoclaw-generated-*")
@@ -126,21 +148,7 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args map[string]any) *t
 	}
 
 	sink := newImageSink(file, t.maxFileSize)
-	switch protocol {
-	case "openai":
-		err = t.generateOpenAIImage(ctx, client, apiBase, modelCfg.APIKey(), modelID, prompt, aspect, sink)
-	case "gemini":
-		err = t.generateGeminiImage(ctx, client, apiBase, modelCfg.APIKey(), modelID, prompt, aspect, sink)
-	case "openrouter":
-		err = t.generateOpenRouterImage(ctx, client, apiBase, modelCfg.APIKey(), modelID, prompt, sink)
-	default:
-		removeFile()
-		return tools.ErrorResult(fmt.Sprintf(
-			"image generation is not implemented for provider %q; select an OpenAI, Gemini, or OpenRouter image model",
-			protocol,
-		))
-	}
-	if err != nil {
+	if err = generate(sink); err != nil {
 		removeFile()
 		return tools.ErrorResult(err.Error()).WithError(err)
 	}
