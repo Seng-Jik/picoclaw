@@ -13,9 +13,18 @@ import (
 	"image/color"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"os"
 	"strings"
+
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
+
+// maxDecodePixels caps the decoded size of an image we are willing to
+// decompress for downscaling. File size is no guard: a few-KB PNG can declare
+// tens of thousands of pixels per side and expand to gigabytes when decoded.
+// 64 Mpx is at most ~256 MB as NRGBA, enough for any camera photo.
+const maxDecodePixels = 64 << 20
 
 // downscaleToDataURL decodes an image file, downsamples it so that its longest
 // edge is at most maxDim pixels, and returns it as a base64 data URL together
@@ -42,6 +51,24 @@ func downscaleToDataURL(localPath, mime string, maxDim, quality int) (string, bo
 		return "", false
 	}
 	defer f.Close()
+
+	// Read only the header first so an image declaring absurd dimensions is
+	// rejected before any pixel buffer is allocated.
+	cfg, _, err := image.DecodeConfig(f)
+	if err != nil {
+		return "", false
+	}
+	if int64(cfg.Width)*int64(cfg.Height) > maxDecodePixels {
+		logger.WarnCF("agent", "Image too large to downscale, sending original", map[string]any{
+			"path":   localPath,
+			"width":  cfg.Width,
+			"height": cfg.Height,
+		})
+		return "", false
+	}
+	if _, err = f.Seek(0, io.SeekStart); err != nil {
+		return "", false
+	}
 
 	src, format, err := image.Decode(f)
 	if err != nil {

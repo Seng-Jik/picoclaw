@@ -2,7 +2,10 @@ package agent
 
 import (
 	"bytes"
+	"compress/zlib"
 	"encoding/base64"
+	"encoding/binary"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -28,6 +31,49 @@ func writeTestJPEG(t *testing.T, w, h int) string {
 	defer f.Close()
 	if err := jpeg.Encode(f, img, &jpeg.Options{Quality: 90}); err != nil {
 		t.Fatalf("encode temp image: %v", err)
+	}
+	return path
+}
+
+// writeBlankPNG writes a valid w×h 1-bit grayscale PNG. All-zero scanlines
+// compress to almost nothing, so a huge declared size costs little on disk.
+func writeBlankPNG(t *testing.T, w, h int) string {
+	t.Helper()
+
+	var idat bytes.Buffer
+	zw := zlib.NewWriter(&idat)
+	row := make([]byte, 1+(w+7)/8)
+	for y := 0; y < h; y++ {
+		if _, err := zw.Write(row); err != nil {
+			t.Fatalf("compress scanline: %v", err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zlib: %v", err)
+	}
+
+	var out bytes.Buffer
+	out.WriteString("\x89PNG\r\n\x1a\n")
+	chunk := func(typ string, data []byte) {
+		_ = binary.Write(&out, binary.BigEndian, uint32(len(data)))
+		out.WriteString(typ)
+		out.Write(data)
+		crc := crc32.NewIEEE()
+		crc.Write([]byte(typ))
+		crc.Write(data)
+		_ = binary.Write(&out, binary.BigEndian, crc.Sum32())
+	}
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:], uint32(w))
+	binary.BigEndian.PutUint32(ihdr[4:], uint32(h))
+	ihdr[8] = 1 // bit depth; color type 0 (grayscale) is the zero value
+	chunk("IHDR", ihdr)
+	chunk("IDAT", idat.Bytes())
+	chunk("IEND", nil)
+
+	path := filepath.Join(t.TempDir(), "blank.png")
+	if err := os.WriteFile(path, out.Bytes(), 0o600); err != nil {
+		t.Fatalf("write temp png: %v", err)
 	}
 	return path
 }
@@ -76,6 +122,21 @@ func TestDownscaleToDataURL_SkipsSmallImages(t *testing.T) {
 
 	if _, ok := downscaleToDataURL(path, "image/jpeg", 100, 85); ok {
 		t.Fatal("expected downscale to be skipped for an image already within the cap")
+	}
+}
+
+func TestDownscaleToDataURL_RejectsOversizedPixelCount(t *testing.T) {
+	// Control: the generated PNG is valid and downscales when small enough.
+	if _, ok := downscaleToDataURL(writeBlankPNG(t, 200, 200), "image/png", 100, 85); !ok {
+		t.Fatal("test PNG generator produced an undecodable image")
+	}
+
+	// 16384×16384 = 268 Mpx, well over maxDecodePixels, yet only tens of KB
+	// on disk. It must be refused from the header alone, never decoded.
+	path := writeBlankPNG(t, 16384, 16384)
+
+	if _, ok := downscaleToDataURL(path, "image/png", 100, 85); ok {
+		t.Fatal("expected image above maxDecodePixels to be left to the raw fallback")
 	}
 }
 
