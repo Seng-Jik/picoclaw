@@ -77,7 +77,7 @@ func (p *GeminiProvider) Chat(
 	model = normalizeGeminiModel(model)
 	requestBody := p.buildRequestBody(messages, tools, model, options)
 	url := fmt.Sprintf("%s/models/%s:generateContent", p.apiBase, model)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, common.NewStreamingJSONReader(requestBody))
+	req, err := common.NewJSONRequest(ctx, http.MethodPost, url, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -139,7 +139,7 @@ func (p *GeminiProvider) ChatStreamEvents(
 	model = normalizeGeminiModel(model)
 	requestBody := p.buildRequestBody(messages, tools, model, options)
 	url := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", p.apiBase, model)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, common.NewStreamingJSONReader(requestBody))
+	req, err := common.NewJSONRequest(ctx, http.MethodPost, url, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

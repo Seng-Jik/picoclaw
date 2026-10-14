@@ -93,7 +93,7 @@ func (p *Provider) Chat(
 
 	// Create HTTP request, streaming the JSON body so the request is not
 	// materialized a second time in memory.
-	req, err := http.NewRequestWithContext(ctx, "POST", endpointURL, common.NewStreamingJSONReader(requestBody))
+	req, err := common.NewJSONRequest(ctx, "POST", endpointURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("creating HTTP request: %w", err)
 	}

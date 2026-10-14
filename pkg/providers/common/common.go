@@ -10,6 +10,7 @@ package common
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -525,13 +526,33 @@ func AsInt(v any) (int, bool) {
 //
 // The HTTP transport closes the returned reader once the request is sent, which
 // unblocks the producer goroutine if it is still writing.
-func NewStreamingJSONReader(v any) io.Reader {
+func NewStreamingJSONReader(v any) io.ReadCloser {
 	pr, pw := io.Pipe()
 	go func() {
 		err := json.NewEncoder(pw).Encode(v)
 		_ = pw.CloseWithError(err)
 	}()
 	return pr
+}
+
+// NewJSONRequest builds a request whose body is v encoded as JSON via
+// NewStreamingJSONReader.
+//
+// A pipe body has no known length, so the request goes out with chunked
+// transfer encoding, and net/http cannot rewind it on its own. Unlike the
+// bytes.Reader body it replaces, that would stop the transport from retrying a
+// request on a stale keep-alive connection and from following 307/308
+// redirects. GetBody restores both by re-encoding v for each replay; v must not
+// be mutated while the request is in flight.
+func NewJSONRequest(ctx context.Context, method, endpoint string, v any) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, NewStreamingJSONReader(v))
+	if err != nil {
+		return nil, err
+	}
+	req.GetBody = func() (io.ReadCloser, error) {
+		return NewStreamingJSONReader(v), nil
+	}
+	return req, nil
 }
 
 // AsFloat converts various numeric types to float64.

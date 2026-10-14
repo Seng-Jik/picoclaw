@@ -167,7 +167,7 @@ func (p *Provider) Chat(
 		requestBody.PromptCacheKey = openai.Opt(cacheKey)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", requestURL, common.NewStreamingJSONReader(requestBody))
+	req, err := common.NewJSONRequest(ctx, "POST", requestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
