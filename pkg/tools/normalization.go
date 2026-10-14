@@ -150,7 +150,7 @@ func persistLargeResultArtifact(result *ToolResult, toolName, workspace string, 
 	preview, omitted, headRunes, tailRunes := buildLargeResultPreview(text, size, maxRunes)
 
 	dir := filepath.Join(workspace, ".artifacts", "tool")
-	pattern := sanitizeIdentifierComponent(toolName) + "_*.txt"
+	pattern := toolshared.SanitizeIdentifierComponent(toolName) + "_*.txt"
 	path, err := toolshared.PersistTextArtifact(dir, pattern, text)
 	if err != nil {
 		logger.WarnCF("tool", "Failed to persist large tool result artifact", map[string]any{
@@ -343,10 +343,10 @@ func storeInlineDataURL(
 		return "", fmt.Sprintf("[Tool returned inline media content (%s) but it could not be stored.]", mimeType)
 	}
 
-	filename := sanitizeIdentifierComponent(toolName) + ext
+	filename := toolshared.SanitizeIdentifierComponent(toolName) + ext
 	scope := fmt.Sprintf(
 		"tool:inline:%s:%s:%s:%d",
-		sanitizeIdentifierComponent(toolName),
+		toolshared.SanitizeIdentifierComponent(toolName),
 		channel,
 		chatID,
 		time.Now().UnixNano(),
@@ -355,7 +355,7 @@ func storeInlineDataURL(
 	ref, err = store.Store(tmpPath, media.MediaMeta{
 		Filename:    filename,
 		ContentType: mimeType,
-		Source:      fmt.Sprintf("tool:inline:%s", sanitizeIdentifierComponent(toolName)),
+		Source:      fmt.Sprintf("tool:inline:%s", toolshared.SanitizeIdentifierComponent(toolName)),
 	}, scope)
 	if err != nil {
 		_ = os.Remove(tmpPath)
