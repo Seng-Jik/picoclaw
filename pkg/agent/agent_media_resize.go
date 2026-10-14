@@ -207,26 +207,30 @@ func boxResample(dst *image.NRGBA, src image.Image) {
 				sx1 = sx0 + 1
 			}
 
-			var r, g, bl, a, n uint32
+			// Weight color by alpha so fully transparent pixels, whose RGB is
+			// arbitrary (often black), do not bleed into the edges of opaque
+			// content. 64-bit sums cannot overflow even for extreme reductions.
+			var r, g, bl, a, n uint64
 			for y := sy0; y < sy1; y++ {
 				for x := sx0; x < sx1; x++ {
 					c := at(x, y)
-					r += uint32(c.R)
-					g += uint32(c.G)
-					bl += uint32(c.B)
-					a += uint32(c.A)
+					ca := uint64(c.A)
+					r += uint64(c.R) * ca
+					g += uint64(c.G) * ca
+					bl += uint64(c.B) * ca
+					a += ca
 					n++
 				}
 			}
-			if n == 0 {
-				continue
+			if n == 0 || a == 0 {
+				continue // dst starts zeroed: fully transparent
 			}
-			half := n / 2
+			half := a / 2
 			dst.SetNRGBA(db.Min.X+dx, db.Min.Y+dy, color.NRGBA{
-				R: uint8((r + half) / n),
-				G: uint8((g + half) / n),
-				B: uint8((bl + half) / n),
-				A: uint8((a + half) / n),
+				R: uint8((r + half) / a),
+				G: uint8((g + half) / a),
+				B: uint8((bl + half) / a),
+				A: uint8((a + n/2) / n),
 			})
 		}
 	}

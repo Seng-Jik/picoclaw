@@ -254,3 +254,34 @@ func TestBoxResample_FastPathsMatchGenericPath(t *testing.T) {
 		})
 	}
 }
+
+func TestBoxResample_TransparentPixelsDoNotBleedColor(t *testing.T) {
+	// Left pixel: opaque red. Right pixel: fully transparent with black RGB,
+	// as PNG encoders commonly store it.
+	src := image.NewNRGBA(image.Rect(0, 0, 2, 1))
+	src.SetNRGBA(0, 0, color.NRGBA{R: 255, A: 255})
+	src.SetNRGBA(1, 0, color.NRGBA{})
+
+	dst := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	boxResample(dst, src)
+
+	got := dst.NRGBAAt(0, 0)
+	if got.R != 255 || got.G != 0 || got.B != 0 {
+		t.Fatalf("color = %v, want pure red: transparent pixel must not darken it", got)
+	}
+	if got.A < 127 || got.A > 128 {
+		t.Fatalf("alpha = %d, want ~128 (half coverage)", got.A)
+	}
+}
+
+func TestBoxResample_FullyTransparentStaysTransparent(t *testing.T) {
+	src := image.NewNRGBA(image.Rect(0, 0, 4, 4))
+	dst := image.NewNRGBA(image.Rect(0, 0, 2, 2))
+	boxResample(dst, src)
+
+	for i, v := range dst.Pix {
+		if v != 0 {
+			t.Fatalf("pix[%d] = %d, want 0", i, v)
+		}
+	}
+}
