@@ -114,8 +114,10 @@ const (
 	sqliteMaxOpenConns = 2
 
 	// sqliteTempStoreFile tells SQLite to spill temporary tables and sort
-	// buffers to disk instead of memory (temp_store = FILE), which bounds the
-	// peak heap used by large compaction/sort queries.
+	// buffers to temporary files instead of the Go heap (temp_store = FILE),
+	// which bounds the peak heap used by large compaction/sort queries. It
+	// does not reduce total memory where the temp directory is RAM-backed
+	// (tmpfs): the spill then uses kernel memory instead of the heap.
 	sqliteTempStoreFile = 1
 )
 
