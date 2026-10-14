@@ -300,6 +300,20 @@ func mapKagiLensTimeFilter(rangeCode string, now time.Time) *kagiopenapi.SearchR
 	return lens
 }
 
+// readSearchBody reads a search provider response, failing loudly when it is
+// larger than maxSearchResponseBytes instead of handing a silently truncated
+// body to the parser (which would surface as a misleading JSON error).
+func readSearchBody(r io.Reader) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, maxSearchResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxSearchResponseBytes {
+		return nil, fmt.Errorf("response exceeds %d bytes", maxSearchResponseBytes)
+	}
+	return body, nil
+}
+
 type BraveSearchProvider struct {
 	keyPool *APIKeyPool
 	proxy   string
@@ -345,7 +359,7 @@ func (p *BraveSearchProvider) Search(
 			continue
 		}
 
-		body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
+		body, err := readSearchBody(resp.Body)
 		_ = resp.Body.Close()
 
 		if err != nil {
@@ -478,7 +492,7 @@ func (p *TavilySearchProvider) Search(
 			continue
 		}
 
-		body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
+		body, err := readSearchBody(resp.Body)
 		_ = resp.Body.Close()
 
 		if err != nil {
@@ -685,7 +699,7 @@ func (p *KeenableSearchProvider) Search(
 			continue
 		}
 
-		body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
+		body, err := readSearchBody(resp.Body)
 		_ = resp.Body.Close()
 		if err != nil {
 			lastErr = fmt.Errorf("failed to read response: %w", err)
@@ -835,7 +849,7 @@ func fallbackKagiSearchResults(resp *http.Response, count int) ([]SearchResultIt
 	if resp == nil || resp.Body == nil {
 		return nil, fmt.Errorf("failed to parse response: empty response body")
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
+	body, err := readSearchBody(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
@@ -995,7 +1009,7 @@ func (p *GeminiSearchProvider) Search(
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
+	body, err := readSearchBody(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}
@@ -1081,7 +1095,7 @@ func (p *SogouSearchProvider) Search(
 			return "", fmt.Errorf("request failed: %w", err)
 		}
 
-		body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
+		body, err := readSearchBody(resp.Body)
 		_ = resp.Body.Close()
 		if err != nil {
 			return "", fmt.Errorf("failed to read response: %w", err)
@@ -1174,7 +1188,7 @@ func (p *DuckDuckGoSearchProvider) Search(
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
+	body, err := readSearchBody(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}
@@ -1322,7 +1336,7 @@ func (p *PerplexitySearchProvider) Search(
 			continue
 		}
 
-		body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
+		body, err := readSearchBody(resp.Body)
 		_ = resp.Body.Close()
 
 		if err != nil {
@@ -1419,7 +1433,11 @@ func (p *SearXNGSearchProvider) Search(
 		} `json:"results"`
 	}
 
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSearchResponseBytes)).Decode(&result); err != nil {
+	body, err := readSearchBody(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %w", err)
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
 		return "", fmt.Errorf("failed to parse response: %w", err)
 	}
 
@@ -1499,7 +1517,7 @@ func (p *GLMSearchProvider) Search(
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
+	body, err := readSearchBody(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}
@@ -1595,7 +1613,7 @@ func (p *BaiduSearchProvider) Search(
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
+	body, err := readSearchBody(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}

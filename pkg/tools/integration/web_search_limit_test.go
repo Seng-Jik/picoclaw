@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -104,15 +105,14 @@ func TestSearchProviders_ClampResponseSize(t *testing.T) {
 			body := &countingBody{prefix: prefix, remaining: payload}
 			p := tt.provider(oversizedClient(body))
 
-			if _, err := p.Search(context.Background(), "picoclaw", 5, ""); err != nil {
-				// The oversized body is not valid JSON/HTML, so an error is
-				// expected. We only care that the read was clamped.
-				t.Logf("Search returned (expected) error: %v", err)
+			_, err := p.Search(context.Background(), "picoclaw", 5, "")
+			if err == nil || !strings.Contains(err.Error(), "response exceeds") {
+				t.Fatalf("Search error = %v, want a \"response exceeds\" error", err)
 			}
 
-			if body.read > maxSearchResponseBytes {
-				t.Fatalf("provider read %d bytes from the response, want <= %d",
-					body.read, maxSearchResponseBytes)
+			// The clamp reads one byte past the cap to detect oversized bodies.
+			if limit := maxSearchResponseBytes + 1; body.read > limit {
+				t.Fatalf("provider read %d bytes from the response, want <= %d", body.read, limit)
 			}
 		})
 	}
