@@ -144,6 +144,16 @@ func TestDownscaleToDataURL_RejectsOversizedPixelCount(t *testing.T) {
 	}
 }
 
+func TestDownscaleToDataURL_SkipsUnsupportedMIME(t *testing.T) {
+	path := writeTestJPEG(t, 800, 400)
+
+	for _, mime := range []string{"image/gif", "image/webp", "application/pdf"} {
+		if _, ok := downscaleToDataURL(path, mime, testVisionOpts(100)); ok {
+			t.Errorf("expected %s to be left to the raw fallback", mime)
+		}
+	}
+}
+
 func TestDownscaleToDataURL_Disabled(t *testing.T) {
 	path := writeTestJPEG(t, 800, 400)
 

@@ -42,8 +42,11 @@ func downscaleToDataURL(localPath, mime string, opts mediaResolveOptions) (strin
 	if maxDim <= 0 {
 		return "", false
 	}
+	// Only formats whose decoder is linked in (image/jpeg, image/png). GIF is
+	// deliberately absent: it is not registered, and flattening an animated
+	// GIF to a single JPEG frame would silently drop the animation.
 	switch mime {
-	case "image/jpeg", "image/jpg", "image/png", "image/gif":
+	case "image/jpeg", "image/jpg", "image/png":
 	default:
 		return "", false
 	}
