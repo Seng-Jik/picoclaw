@@ -150,7 +150,10 @@ func NewEngine(config Config, completeFn CompleteFn) (*Engine, error) {
 	}
 
 	// Bound the pool so the per-connection page cache cannot grow unchecked on
-	// memory-constrained devices (see sqliteMaxOpenConns).
+	// memory-constrained devices (see sqliteMaxOpenConns). Idle is tied to the
+	// cap rather than left at database/sql's default of 2, so changing the cap
+	// never makes the pool close and reopen connections (and re-run their
+	// pragmas) on every release.
 	db.SetMaxOpenConns(sqliteMaxOpenConns)
 	db.SetMaxIdleConns(sqliteMaxOpenConns)
 
