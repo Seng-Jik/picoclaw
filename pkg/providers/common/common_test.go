@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
@@ -887,6 +889,25 @@ func TestNewJSONRequest_GetBodyReplaysBody(t *testing.T) {
 	}
 	if !bytes.Equal(first, second) {
 		t.Fatalf("replayed body differs from the original")
+	}
+}
+
+func TestNewJSONRequest_BuildFailureDoesNotLeakEncoder(t *testing.T) {
+	baseline := runtime.NumGoroutine()
+
+	// An unparsable URL makes http.NewRequestWithContext fail after the encoder
+	// goroutine has already been started.
+	if _, err := NewJSONRequest(context.Background(), http.MethodPost, "http://[::1", map[string]any{"a": 1}); err == nil {
+		t.Fatal("expected an error for an invalid URL")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > baseline {
+		if time.Now().After(deadline) {
+			t.Fatalf("encoder goroutine still running after request build failed: %d goroutines, baseline %d",
+				runtime.NumGoroutine(), baseline)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

@@ -544,9 +544,14 @@ func NewStreamingJSONReader(v any) io.ReadCloser {
 // request on a stale keep-alive connection and from following 307/308
 // redirects. GetBody restores both by re-encoding v for each replay; v must not
 // be mutated while the request is in flight.
+//
+// If the request cannot be built, the body is closed so the encoder goroutine
+// does not stay blocked on a pipe nobody will ever read.
 func NewJSONRequest(ctx context.Context, method, endpoint string, v any) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, NewStreamingJSONReader(v))
+	body := NewStreamingJSONReader(v)
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
 	if err != nil {
+		_ = body.Close()
 		return nil, err
 	}
 	req.GetBody = func() (io.ReadCloser, error) {
