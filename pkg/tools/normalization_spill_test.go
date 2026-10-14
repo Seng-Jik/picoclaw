@@ -185,19 +185,25 @@ func TestExecuteWithContext_KeepsSmallResultInline(t *testing.T) {
 }
 
 func TestExecuteWithContext_SpillDisabledWithoutWorkspace(t *testing.T) {
-	reg := NewToolRegistry()
-	reg.SetMaxInlineResultRunes(8)
+	// SetWorkspace trims, so a blank workspace must behave like an unset one.
+	for name, workspace := range map[string]string{"unset": "", "blank": "  \t "} {
+		t.Run(name, func(t *testing.T) {
+			reg := NewToolRegistry()
+			reg.SetWorkspace(workspace)
+			reg.SetMaxInlineResultRunes(8)
 
-	large := strings.Repeat("tool output line\n", 50)
-	reg.Register(newSpillTool("big_tool", SilentResult(large)))
+			large := strings.Repeat("tool output line\n", 50)
+			reg.Register(newSpillTool("big_tool", SilentResult(large)))
 
-	result := reg.Execute(context.Background(), "big_tool", nil)
+			result := reg.Execute(context.Background(), "big_tool", nil)
 
-	if !strings.Contains(result.ForLLM, "tool output line") {
-		t.Fatalf("expected large result inline when workspace is unset, got %q", result.ForLLM)
-	}
-	if len(result.ArtifactTags) != 0 {
-		t.Fatalf("expected no artifact tags, got %+v", result.ArtifactTags)
+			if !strings.Contains(result.ForLLM, "tool output line") {
+				t.Fatalf("expected large result inline when workspace is unset, got %q", result.ForLLM)
+			}
+			if len(result.ArtifactTags) != 0 {
+				t.Fatalf("expected no artifact tags, got %+v", result.ArtifactTags)
+			}
+		})
 	}
 }
 

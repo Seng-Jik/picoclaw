@@ -128,7 +128,7 @@ func normalizeToolResult(
 // injected into the model context is filtered. Treat workspace artifacts as
 // sensitive data. See docs/security/sensitive_data_filtering.md.
 func persistLargeResultArtifact(result *ToolResult, toolName, workspace string, maxRunes int) {
-	if result == nil || maxRunes <= 0 || strings.TrimSpace(workspace) == "" {
+	if result == nil || maxRunes <= 0 || workspace == "" {
 		return
 	}
 	if result.ResponseHandled {
