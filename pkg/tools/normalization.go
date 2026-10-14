@@ -116,12 +116,12 @@ func normalizeToolResult(
 // persistLargeResultArtifact spills an oversized tool result to a workspace
 // artifact so the full payload does not consume model context. Unlike a plain
 // pointer, ForLLM keeps a bounded head+tail preview plus an honest, front-loaded
-// truncation notice, and the artifact path is exposed both inline (a pointer at
-// the tail) and via ArtifactTags. Keeping useful content inline means the model
-// can usually answer from the preview instead of re-reading the artifact — which
-// for content tools such as read_file would spill again and loop. It is a no-op
-// when the result is small, already spilled, the workspace is unknown, or
-// persistence is disabled.
+// truncation notice. The artifact path is exposed once, via ArtifactTags, which
+// ContentForLLM renders for the model. Keeping useful content inline means the
+// model can usually answer from the preview instead of re-reading the artifact
+// — which for content tools such as read_file would spill again and loop. It is
+// a no-op when the result is small, already spilled, the workspace is unknown,
+// or persistence is disabled.
 //
 // Security note: this runs before the sensitive-data filter is applied, so the
 // artifact file on disk keeps the raw, unredacted tool output. Only the content
@@ -173,9 +173,9 @@ func persistLargeResultArtifact(result *ToolResult, toolName, workspace string, 
 	result.ForLLM = fmt.Sprintf(
 		"%s [Tool returned a large result (%d chars, %d omitted); "+
 			"showing first %d and last %d characters.]\n\n%s\n\n"+
-			"💾 [Full output saved to: %s — use read_file (offset/length) to read more, "+
-			"or send_file to forward it.]",
-		largeResultSpillSentinel, size, omitted, headRunes, tailRunes, preview, path,
+			"💾 [Full output saved as a local artifact (path listed below) — "+
+			"use read_file (offset/length) to read more.]",
+		largeResultSpillSentinel, size, omitted, headRunes, tailRunes, preview,
 	)
 	result.ArtifactTags = append(result.ArtifactTags, "[file:"+path+"]")
 	result.LargeResultSpilled = true

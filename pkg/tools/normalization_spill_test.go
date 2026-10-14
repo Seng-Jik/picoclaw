@@ -37,7 +37,7 @@ func TestExecuteWithContext_SpillsLargeResultToArtifact(t *testing.T) {
 	if !strings.Contains(result.ForLLM, "characters truncated") {
 		t.Fatalf("expected honest omission marker, got %q", result.ForLLM)
 	}
-	if !strings.Contains(result.ForLLM, "Full output saved to:") {
+	if !strings.Contains(result.ForLLM, "Full output saved as a local artifact") {
 		t.Fatalf("expected artifact pointer, got %q", result.ForLLM)
 	}
 	if len(result.ArtifactTags) != 1 {
@@ -60,8 +60,13 @@ func TestExecuteWithContext_SpillsLargeResultToArtifact(t *testing.T) {
 	if string(data) != strings.TrimSpace(large) {
 		t.Fatalf("expected artifact file contents to match source text")
 	}
-	if content := result.ContentForLLM(); !strings.Contains(content, "Local artifact paths: "+tag) {
+	content := result.ContentForLLM()
+	if !strings.Contains(content, "Local artifact paths: "+tag) {
 		t.Fatalf("expected artifact path exposed to the model, got %q", content)
+	}
+	// The path must reach the model exactly once, not in both prose and tag.
+	if n := strings.Count(content, path); n != 1 {
+		t.Fatalf("expected artifact path once in model content, got %d times: %q", n, content)
 	}
 }
 
