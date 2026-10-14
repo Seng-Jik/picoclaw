@@ -933,7 +933,12 @@ func TestNewJSONRequest_BuildFailureDoesNotLeakEncoder(t *testing.T) {
 
 	// An unparsable URL makes http.NewRequestWithContext fail after the encoder
 	// goroutine has already been started.
-	if _, err := NewJSONRequest(context.Background(), http.MethodPost, "http://[::1", map[string]any{"a": 1}); err == nil {
+	if _, err := NewJSONRequest(
+		context.Background(),
+		http.MethodPost,
+		"http://[::1",
+		map[string]any{"a": 1},
+	); err == nil {
 		t.Fatal("expected an error for an invalid URL")
 	}
 
@@ -963,7 +968,12 @@ func TestNewJSONRequest_FollowsTemporaryRedirect(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	req, err := NewJSONRequest(context.Background(), http.MethodPost, server.URL+"/old", map[string]any{"hello": "world"})
+	req, err := NewJSONRequest(
+		context.Background(),
+		http.MethodPost,
+		server.URL+"/old",
+		map[string]any{"hello": "world"},
+	)
 	if err != nil {
 		t.Fatalf("NewJSONRequest: %v", err)
 	}
