@@ -79,7 +79,9 @@ func mediaResolveOptionsFor(cfg *config.Config) mediaResolveOptions {
 
 // mediaResolveOptions controls how media references are turned into model input.
 type mediaResolveOptions struct {
-	// maxSize is the maximum file size, in bytes, that may be inlined.
+	// maxSize is the maximum size, in bytes, of an image payload that may be
+	// inlined. It applies after downscaling, so a large original that shrinks
+	// below it is still sent.
 	maxSize int
 	// maxImageDimension is the longest-edge cap applied to inlined images.
 	// 0 disables downscaling and sends the original bytes.
@@ -203,9 +205,15 @@ func resolveMediaRefsWithOptions(
 }
 
 // encodeImageToDataURL base64-encodes an image file into a data URL, first
-// downscaling it when a vision dimension cap is configured. Returns empty
-// string if the file exceeds opts.maxSize or encoding fails.
+// downscaling it when a vision dimension cap is configured. The size limit
+// applies to the payload actually sent, so an oversized original that
+// downscales under opts.maxSize is still inlined. Returns empty string if the
+// payload exceeds opts.maxSize or encoding fails.
 func encodeImageToDataURL(localPath, mime string, info os.FileInfo, opts mediaResolveOptions) string {
+	if dataURL, ok := downscaleToDataURL(localPath, mime, opts); ok {
+		return dataURL
+	}
+
 	if info.Size() > int64(opts.maxSize) {
 		logger.WarnCF("agent", "Media file too large, skipping", map[string]any{
 			"path":     localPath,
@@ -213,12 +221,6 @@ func encodeImageToDataURL(localPath, mime string, info os.FileInfo, opts mediaRe
 			"max_size": opts.maxSize,
 		})
 		return ""
-	}
-
-	if opts.maxImageDimension > 0 {
-		if dataURL, ok := downscaleToDataURL(localPath, mime, opts.maxImageDimension, opts.jpegQuality); ok {
-			return dataURL
-		}
 	}
 
 	f, err := os.Open(localPath)

@@ -29,14 +29,16 @@ const maxDecodePixels = 64 << 20
 // downscaleToDataURL decodes an image file, downsamples it so that its longest
 // edge is at most maxDim pixels, and returns it as a base64 data URL together
 // with the MIME type of the encoded output. It reports ok=false when the image
-// is already small enough, cannot be decoded, or uses an unsupported format —
-// in which case the caller should fall back to sending the original file.
+// is already small enough, cannot be decoded, uses an unsupported format, or
+// the result still exceeds opts.maxSize — in which case the caller should fall
+// back to sending the original file.
 //
 // Downscaling before base64-encoding is the single largest lever on the
 // transient memory used by the vision pipeline: a 20 MB photo becomes a few
 // hundred kilobytes, shrinking both the encoded payload held in the message
 // history and the JSON request built for the model.
-func downscaleToDataURL(localPath, mime string, maxDim, quality int) (string, bool) {
+func downscaleToDataURL(localPath, mime string, opts mediaResolveOptions) (string, bool) {
+	maxDim := opts.maxImageDimension
 	if maxDim <= 0 {
 		return "", false
 	}
@@ -94,10 +96,15 @@ func downscaleToDataURL(localPath, mime string, maxDim, quality int) (string, bo
 		}
 		outMIME = "image/png"
 	default:
-		if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: quality}); err != nil {
+		if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: opts.jpegQuality}); err != nil {
 			return "", false
 		}
 		outMIME = "image/jpeg"
+	}
+
+	// The size limit applies to what is actually sent, not to the original.
+	if buf.Len() > opts.maxSize {
+		return "", false
 	}
 
 	var sb strings.Builder

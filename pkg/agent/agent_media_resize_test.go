@@ -15,6 +15,10 @@ import (
 	"testing"
 )
 
+func testVisionOpts(maxDim int) mediaResolveOptions {
+	return mediaResolveOptions{maxSize: 20 << 20, maxImageDimension: maxDim, jpegQuality: 85}
+}
+
 func writeTestJPEG(t *testing.T, w, h int) string {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
@@ -98,7 +102,7 @@ func decodeDataURL(t *testing.T, dataURL string) image.Image {
 func TestDownscaleToDataURL_CapsLongestEdge(t *testing.T) {
 	path := writeTestJPEG(t, 800, 400)
 
-	dataURL, ok := downscaleToDataURL(path, "image/jpeg", 100, 85)
+	dataURL, ok := downscaleToDataURL(path, "image/jpeg", testVisionOpts(100))
 	if !ok {
 		t.Fatal("expected downscale to succeed for oversized image")
 	}
@@ -120,14 +124,14 @@ func TestDownscaleToDataURL_CapsLongestEdge(t *testing.T) {
 func TestDownscaleToDataURL_SkipsSmallImages(t *testing.T) {
 	path := writeTestJPEG(t, 80, 60)
 
-	if _, ok := downscaleToDataURL(path, "image/jpeg", 100, 85); ok {
+	if _, ok := downscaleToDataURL(path, "image/jpeg", testVisionOpts(100)); ok {
 		t.Fatal("expected downscale to be skipped for an image already within the cap")
 	}
 }
 
 func TestDownscaleToDataURL_RejectsOversizedPixelCount(t *testing.T) {
 	// Control: the generated PNG is valid and downscales when small enough.
-	if _, ok := downscaleToDataURL(writeBlankPNG(t, 200, 200), "image/png", 100, 85); !ok {
+	if _, ok := downscaleToDataURL(writeBlankPNG(t, 200, 200), "image/png", testVisionOpts(100)); !ok {
 		t.Fatal("test PNG generator produced an undecodable image")
 	}
 
@@ -135,7 +139,7 @@ func TestDownscaleToDataURL_RejectsOversizedPixelCount(t *testing.T) {
 	// on disk. It must be refused from the header alone, never decoded.
 	path := writeBlankPNG(t, 16384, 16384)
 
-	if _, ok := downscaleToDataURL(path, "image/png", 100, 85); ok {
+	if _, ok := downscaleToDataURL(path, "image/png", testVisionOpts(100)); ok {
 		t.Fatal("expected image above maxDecodePixels to be left to the raw fallback")
 	}
 }
@@ -143,7 +147,7 @@ func TestDownscaleToDataURL_RejectsOversizedPixelCount(t *testing.T) {
 func TestDownscaleToDataURL_Disabled(t *testing.T) {
 	path := writeTestJPEG(t, 800, 400)
 
-	if _, ok := downscaleToDataURL(path, "image/jpeg", 0, 85); ok {
+	if _, ok := downscaleToDataURL(path, "image/jpeg", testVisionOpts(0)); ok {
 		t.Fatal("expected downscale to be skipped when maxDim is 0")
 	}
 }
@@ -163,5 +167,36 @@ func TestScalingDimensions(t *testing.T) {
 			t.Errorf("scaledDimensions(%d,%d,%d) = %d,%d; want %d,%d",
 				tt.w, tt.h, tt.max, gotW, gotH, tt.wantW, tt.wantH)
 		}
+	}
+}
+
+func TestDownscaleToDataURL_RejectsResultOverMaxSize(t *testing.T) {
+	path := writeTestJPEG(t, 800, 400)
+
+	opts := testVisionOpts(100)
+	opts.maxSize = 1 // nothing fits
+	if _, ok := downscaleToDataURL(path, "image/jpeg", opts); ok {
+		t.Fatal("expected downscaled payload above maxSize to be refused")
+	}
+}
+
+func TestEncodeImageToDataURL_DownscalesOriginalOverMaxSize(t *testing.T) {
+	path := writeTestJPEG(t, 800, 400)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Limit sits between the downscaled payload and the original file size.
+	opts := testVisionOpts(100)
+	opts.maxSize = int(info.Size()) - 1
+	if got := encodeImageToDataURL(path, "image/jpeg", info, opts); got == "" {
+		t.Fatal("original over maxSize should be inlined once downscaled under it")
+	}
+
+	// Without downscaling the same limit still drops the original.
+	opts.maxImageDimension = 0
+	if got := encodeImageToDataURL(path, "image/jpeg", info, opts); got != "" {
+		t.Fatal("original over maxSize must be dropped when downscaling is disabled")
 	}
 }
