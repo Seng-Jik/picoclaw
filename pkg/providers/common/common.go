@@ -527,6 +527,9 @@ func AsInt(v any) (int, bool) {
 // The HTTP transport closes the returned reader once the request is sent, which
 // unblocks the producer goroutine if it is still writing.
 //
+// Unlike json.Marshal, Encode terminates the value with a newline, so the body
+// is one byte longer. It is insignificant whitespace to any JSON parser.
+//
 // An encoding error is delivered to the reader as a read error, wrapped with
 // "serializing request body" since it no longer surfaces before the request is
 // sent the way a json.Marshal error did.
