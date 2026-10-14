@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -77,13 +76,8 @@ func (p *GeminiProvider) Chat(
 
 	model = normalizeGeminiModel(model)
 	requestBody := p.buildRequestBody(messages, tools, model, options)
-	jsonData, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
 	url := fmt.Sprintf("%s/models/%s:generateContent", p.apiBase, model)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonData))
+	req, err := common.NewJSONRequest(ctx, http.MethodPost, url, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -144,13 +138,8 @@ func (p *GeminiProvider) ChatStreamEvents(
 
 	model = normalizeGeminiModel(model)
 	requestBody := p.buildRequestBody(messages, tools, model, options)
-	jsonData, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
 	url := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", p.apiBase, model)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonData))
+	req, err := common.NewJSONRequest(ctx, http.MethodPost, url, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

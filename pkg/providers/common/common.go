@@ -10,6 +10,7 @@ package common
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -507,6 +508,66 @@ func AsInt(v any) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// NewStreamingJSONReader serializes v as JSON into an io.Pipe and returns the
+// read end, for use as an HTTP request body.
+//
+// json.Marshal builds the full JSON in a pooled encode buffer and then returns
+// a second, exact-size copy of it, which the old bytes.NewReader body kept alive
+// for the whole request. For vision requests that is tens of megabytes of base64
+// image data on top of what the message structs already hold.
+//
+// json.Encoder.Encode skips that second copy, but it is not incremental: it
+// still encodes the whole value into its internal buffer and hands it to the
+// pipe in a single Write, which returns only once the HTTP transport has read
+// it all. The saving is therefore one payload-sized copy (the peak while
+// marshaling), not a body that is never fully materialized.
+//
+// The HTTP transport closes the returned reader once the request is sent, which
+// unblocks the producer goroutine if it is still writing.
+//
+// Unlike json.Marshal, Encode terminates the value with a newline, so the body
+// is one byte longer. It is insignificant whitespace to any JSON parser.
+//
+// An encoding error is delivered to the reader as a read error, wrapped with
+// "serializing request body" since it no longer surfaces before the request is
+// sent the way a json.Marshal error did.
+func NewStreamingJSONReader(v any) io.ReadCloser {
+	pr, pw := io.Pipe()
+	go func() {
+		err := json.NewEncoder(pw).Encode(v)
+		if err != nil {
+			err = fmt.Errorf("serializing request body: %w", err)
+		}
+		_ = pw.CloseWithError(err)
+	}()
+	return pr
+}
+
+// NewJSONRequest builds a request whose body is v encoded as JSON via
+// NewStreamingJSONReader.
+//
+// A pipe body has no known length, so the request goes out with chunked
+// transfer encoding, and net/http cannot rewind it on its own. Unlike the
+// bytes.Reader body it replaces, that would stop the transport from retrying a
+// request on a stale keep-alive connection and from following 307/308
+// redirects. GetBody restores both by re-encoding v for each replay; v must not
+// be mutated while the request is in flight.
+//
+// If the request cannot be built, the body is closed so the encoder goroutine
+// does not stay blocked on a pipe nobody will ever read.
+func NewJSONRequest(ctx context.Context, method, endpoint string, v any) (*http.Request, error) {
+	body := NewStreamingJSONReader(v)
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+	if err != nil {
+		_ = body.Close()
+		return nil, err
+	}
+	req.GetBody = func() (io.ReadCloser, error) {
+		return NewStreamingJSONReader(v), nil
+	}
+	return req, nil
 }
 
 // AsFloat converts various numeric types to float64.
