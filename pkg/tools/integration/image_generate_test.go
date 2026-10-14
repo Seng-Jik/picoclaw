@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"testing/iotest"
+	"unicode/utf8"
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/media"
@@ -391,6 +392,42 @@ func TestValidateGeneratedImage(t *testing.T) {
 	}
 	if _, _, err := validateGeneratedImage([]byte("<html></html>"), 13); err == nil {
 		t.Fatal("expected an unsupported format error")
+	}
+}
+
+func TestImageGenerateTruncatesErrorBody(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"short body kept whole", " rate limited \n", "rate limited"},
+		{"long body cut", strings.Repeat("x", 1<<20), strings.Repeat("x", imageErrorBodyLimit) + "..."},
+		// 1024 is not a multiple of 3, so the cut lands inside a multi-byte rune.
+		{
+			"cut inside a rune stays valid UTF-8",
+			strings.Repeat("€", 1<<18),
+			strings.Repeat("€", imageErrorBodyLimit/3) + "...",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer server.Close()
+
+			tool := NewImageGenerateTool(nil, config.DefaultMaxMediaSize, nil)
+			_, err := tool.postJSON(context.Background(), server.Client(), server.URL, "", "", nil)
+			want := "image model returned HTTP 500: " + tt.want
+			if err == nil || err.Error() != want {
+				t.Fatalf("error = %v, want %q", err, want)
+			}
+			if !utf8.ValidString(err.Error()) {
+				t.Fatalf("error is not valid UTF-8: %q", err)
+			}
+		})
 	}
 }
 
