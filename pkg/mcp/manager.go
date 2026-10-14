@@ -22,6 +22,13 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
+// mcpMaxConcurrentConnect bounds how many MCP servers are started at the same
+// time during initialization. Each server is a separate child process (often a
+// Node or Python runtime), so connecting every configured server at once can
+// spike memory and CPU on constrained devices. All enabled servers are still
+// connected; only the startup burst is bounded.
+const mcpMaxConcurrentConnect = 4
+
 // headerTransport is an http.RoundTripper that adds custom headers to requests
 type headerTransport struct {
 	base    http.RoundTripper
@@ -237,6 +244,7 @@ func (m *Manager) LoadFromMCPConfig(
 
 	var wg sync.WaitGroup
 	errs := make(chan error, len(mcpCfg.Servers))
+	sem := make(chan struct{}, mcpMaxConcurrentConnect)
 	enabledCount := 0
 
 	for name, serverCfg := range mcpCfg.Servers {
@@ -252,6 +260,11 @@ func (m *Manager) LoadFromMCPConfig(
 		wg.Add(1)
 		go func(name string, serverCfg config.MCPServerConfig, workspace string) {
 			defer wg.Done()
+
+			// Bound the number of servers starting concurrently so a large
+			// configuration does not spawn all child processes at once.
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
 			// Resolve relative envFile paths relative to workspace
 			if serverCfg.EnvFile != "" && !filepath.IsAbs(serverCfg.EnvFile) {
