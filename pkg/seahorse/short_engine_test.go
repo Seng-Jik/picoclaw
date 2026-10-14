@@ -3,6 +3,7 @@ package seahorse
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -2042,6 +2043,32 @@ func TestNewEngineBoundsConnectionPool(t *testing.T) {
 	defer eng.Close()
 	if got := eng.store.db.Stats().MaxOpenConnections; got != sqliteMaxOpenConns {
 		t.Fatalf("MaxOpenConnections = %d, want %d", got, sqliteMaxOpenConns)
+	}
+}
+
+// TestStoreWaitingForPooledConnectionHonoursContext documents the failure mode
+// of the bounded pool: when every connection is busy, store calls queue for
+// one and must give up when their context ends instead of blocking forever.
+func TestStoreWaitingForPooledConnectionHonoursContext(t *testing.T) {
+	eng, err := NewEngine(Config{DBPath: filepath.Join(t.TempDir(), "starved.db")}, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	defer eng.Close()
+
+	ctx := context.Background()
+	for i := 0; i < sqliteMaxOpenConns; i++ {
+		c, connErr := eng.store.db.Conn(ctx)
+		if connErr != nil {
+			t.Fatalf("Conn %d: %v", i, connErr)
+		}
+		defer c.Close()
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	if _, err = eng.store.GetMessageCount(callCtx, 1); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("GetMessageCount with exhausted pool: err = %v, want context.DeadlineExceeded", err)
 	}
 }
 
