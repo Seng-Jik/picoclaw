@@ -512,12 +512,16 @@ func AsInt(v any) (int, bool) {
 // NewStreamingJSONReader serializes v as JSON into an io.Pipe and returns the
 // read end, for use as an HTTP request body.
 //
-// Marshaling the request body up front (json.Marshal + bytes.NewReader) keeps a
-// full copy of the payload in memory. For vision requests that copy can be tens
-// of megabytes of base64 image data that is already held in the message
-// structs, doubling the peak heap. Streaming the encoding lets the HTTP client
-// consume the JSON as it is produced, so the body is never fully materialized a
-// second time.
+// json.Marshal builds the full JSON in a pooled encode buffer and then returns
+// a second, exact-size copy of it, which the old bytes.NewReader body kept alive
+// for the whole request. For vision requests that is tens of megabytes of base64
+// image data on top of what the message structs already hold.
+//
+// json.Encoder.Encode skips that second copy, but it is not incremental: it
+// still encodes the whole value into its internal buffer and hands it to the
+// pipe in a single Write, which returns only once the HTTP transport has read
+// it all. The saving is therefore one payload-sized copy (the peak while
+// marshaling), not a body that is never fully materialized.
 //
 // The HTTP transport closes the returned reader once the request is sent, which
 // unblocks the producer goroutine if it is still writing.
