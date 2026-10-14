@@ -90,6 +90,13 @@ func downscaleToDataURL(localPath, mime string, opts mediaResolveOptions) (strin
 	dst := image.NewNRGBA(image.Rect(0, 0, nw, nh))
 	boxResample(dst, src)
 
+	if format == "jpeg" {
+		if _, err = f.Seek(0, io.SeekStart); err != nil {
+			return "", false
+		}
+		dst = orient(dst, jpegOrientation(f))
+	}
+
 	var buf bytes.Buffer
 	var outMIME string
 	switch format {
