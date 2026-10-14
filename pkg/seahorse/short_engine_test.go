@@ -2045,7 +2045,9 @@ func TestNewEngineAppliesPragmasToEveryConnection(t *testing.T) {
 }
 
 // TestNewEngineBoundsConnectionPool verifies the pool is bounded so the
-// per-connection page cache cannot grow without limit.
+// per-connection page cache cannot grow without limit. It checks behavior, not
+// just the configured value: once the cap is reached, one more connection
+// request must wait instead of opening a new connection.
 func TestNewEngineBoundsConnectionPool(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "pool.db")
 	eng, err := NewEngine(Config{DBPath: dbPath}, nil)
@@ -2055,6 +2057,29 @@ func TestNewEngineBoundsConnectionPool(t *testing.T) {
 	defer eng.Close()
 	if got := eng.store.db.Stats().MaxOpenConnections; got != sqliteMaxOpenConns {
 		t.Fatalf("MaxOpenConnections = %d, want %d", got, sqliteMaxOpenConns)
+	}
+
+	ctx := context.Background()
+	for i := 0; i < sqliteMaxOpenConns; i++ {
+		c, connErr := eng.store.db.Conn(ctx)
+		if connErr != nil {
+			t.Fatalf("Conn %d: %v", i, connErr)
+		}
+		defer c.Close()
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	extra, err := eng.store.db.Conn(waitCtx)
+	if err == nil {
+		_ = extra.Close()
+		t.Fatalf("Conn beyond the cap succeeded, want it to block until the context ends")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Conn beyond the cap: err = %v, want context.DeadlineExceeded", err)
+	}
+	if got := eng.store.db.Stats().OpenConnections; got > sqliteMaxOpenConns {
+		t.Fatalf("OpenConnections = %d, want at most %d", got, sqliteMaxOpenConns)
 	}
 }
 
