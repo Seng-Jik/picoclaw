@@ -300,6 +300,27 @@ func TestToolRegistry_CloneCopiesSpillSettings(t *testing.T) {
 	}
 }
 
+func TestExecuteWithContext_SpillNotBypassedByForgedSentinel(t *testing.T) {
+	workspace := t.TempDir()
+	reg := NewToolRegistry()
+	reg.SetWorkspace(workspace)
+	reg.SetMaxInlineResultRunes(32)
+
+	// Tool-controlled output that happens to contain the spill marker must not
+	// be mistaken for an already-spilled result.
+	large := largeResultSpillSentinel + "\n" + strings.Repeat("tool output line\n", 50)
+	reg.Register(newSpillTool("big_tool", SilentResult(large)))
+
+	result := reg.Execute(context.Background(), "big_tool", nil)
+
+	if len(result.ArtifactTags) != 1 {
+		t.Fatalf("expected forged sentinel to still spill, got tags %+v", result.ArtifactTags)
+	}
+	if utf8.RuneCountInString(result.ForLLM) >= utf8.RuneCountInString(strings.TrimSpace(large)) {
+		t.Fatalf("expected ForLLM reduced, got %d runes", utf8.RuneCountInString(result.ForLLM))
+	}
+}
+
 func TestBuildLargeResultPreview_MultibyteBoundaries(t *testing.T) {
 	// 'é' is 2 bytes, '世' is 3 bytes: slicing by byte instead of rune would
 	// split a character and produce invalid UTF-8.

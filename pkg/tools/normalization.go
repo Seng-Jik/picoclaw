@@ -20,11 +20,10 @@ const (
 	inlineMediaOmittedMessage = toolshared.InlineMediaOmittedMessage
 	inlineMediaStoredMessage  = "[Tool returned inline media content (%s); omitted from model context and registered as a media attachment.]"
 
-	// largeResultSpillSentinel prefixes a ForLLM value that has already been
-	// reduced to a bounded artifact preview. Its presence makes the spill
-	// idempotent, so re-normalizing an already-spilled result (for example after
-	// an AfterTool hook) cannot truncate it a second time or write a second
-	// artifact.
+	// largeResultSpillSentinel prefixes a ForLLM value that has been reduced to a
+	// bounded artifact preview, so the model and logs can recognize it. It is
+	// informational only: idempotency is tracked by ToolResult.LargeResultSpilled,
+	// because tool output could contain this text.
 	largeResultSpillSentinel = "[picoclaw-large-tool-result]"
 
 	// largeResultPreviewHeadRunes and largeResultPreviewTailRunes bound the
@@ -137,7 +136,7 @@ func persistLargeResultArtifact(result *ToolResult, toolName, workspace string, 
 		// needs the short confirmation.
 		return
 	}
-	if strings.Contains(result.ForLLM, largeResultSpillSentinel) {
+	if result.LargeResultSpilled {
 		// Already reduced to a bounded preview: never spill a preview again.
 		return
 	}
@@ -167,6 +166,7 @@ func persistLargeResultArtifact(result *ToolResult, toolName, workspace string, 
 				"showing a bounded preview because artifact persistence failed.]\n\n%s",
 			largeResultSpillSentinel, size, omitted, preview,
 		)
+		result.LargeResultSpilled = true
 		return
 	}
 
@@ -178,6 +178,7 @@ func persistLargeResultArtifact(result *ToolResult, toolName, workspace string, 
 		largeResultSpillSentinel, size, omitted, headRunes, tailRunes, preview, path,
 	)
 	result.ArtifactTags = append(result.ArtifactTags, "[file:"+path+"]")
+	result.LargeResultSpilled = true
 }
 
 // buildLargeResultPreview returns a head+tail preview of text, the number of
