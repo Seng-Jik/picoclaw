@@ -861,3 +861,55 @@ func TestManager_CloseWaitsForInFlightCallTool(t *testing.T) {
 		t.Fatal("Close did not return after the in-flight call completed")
 	}
 }
+
+func TestLoadFromMCPConfigBoundsConcurrentConnects(t *testing.T) {
+	originalConnectServerFunc := connectServerFunc
+	t.Cleanup(func() { connectServerFunc = originalConnectServerFunc })
+
+	var mu sync.Mutex
+	var current, maxObserved int
+	connectServerFunc = func(
+		_ context.Context,
+		name string,
+		cfg config.MCPServerConfig,
+	) (*ServerConnection, error) {
+		mu.Lock()
+		current++
+		if current > maxObserved {
+			maxObserved = current
+		}
+		mu.Unlock()
+
+		time.Sleep(20 * time.Millisecond)
+
+		mu.Lock()
+		current--
+		mu.Unlock()
+		return &ServerConnection{Name: name, Config: cfg}, nil
+	}
+
+	servers := make(map[string]config.MCPServerConfig, mcpMaxConcurrentConnect*3)
+	for i := 0; i < mcpMaxConcurrentConnect*3; i++ {
+		servers[fmt.Sprintf("server-%d", i)] = config.MCPServerConfig{
+			Enabled: true,
+			Type:    "stdio",
+			Command: "echo",
+		}
+	}
+
+	mgr := NewManager()
+	if err := mgr.LoadFromMCPConfig(
+		context.Background(),
+		config.MCPConfig{Enabled: true, Servers: servers},
+		"",
+	); err != nil {
+		t.Fatalf("LoadFromMCPConfig: %v", err)
+	}
+
+	if maxObserved > mcpMaxConcurrentConnect {
+		t.Fatalf("max concurrent connects = %d, want <= %d", maxObserved, mcpMaxConcurrentConnect)
+	}
+	if len(mgr.GetServers()) != len(servers) {
+		t.Fatalf("connected servers = %d, want %d", len(mgr.GetServers()), len(servers))
+	}
+}

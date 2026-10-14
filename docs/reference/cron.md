@@ -12,6 +12,11 @@ PicoClaw currently uses three schedule forms in the cron tool:
 - `every_seconds`: recurring interval, in seconds.
 - `cron_expr`: recurring cron expression such as `0 9 * * *`.
 
+For `cron_expr`, the stored schedule also accepts an optional `tz` field with an
+IANA timezone name (for example `Europe/Rome`). When it is empty, the expression
+is evaluated in the server's local time. The agent tool and the CLI do not set
+this field, so it is only reachable by editing `cron/jobs.json` directly.
+
 The CLI command `picoclaw cron add` currently supports recurring jobs only:
 
 - `--every <seconds>`
@@ -41,9 +46,10 @@ When rescheduling an existing task, use `list -> get -> update`. Do not use
 the original prompt, delivery target, or command payload.
 
 Remote channel access is scoped to the current `channel/chat_id`: remote callers
-can only list, get, or update jobs whose saved `payload.channel` and `payload.to`
-match the current conversation. Command jobs include a shell command payload, so
-they can only be listed, inspected, or updated from internal channels or remote
+can only act on jobs whose saved `payload.channel` and `payload.to` match the
+current conversation. This applies to `list`, `get`, `update`, `remove`,
+`enable`, and `disable`. Command jobs include a shell command payload, so they
+can only be listed, inspected, or updated from internal channels or remote
 channels allowed by `tools.cron.command_allowed_remotes`.
 
 Example tool calls:
@@ -169,5 +175,6 @@ Both the gateway and `picoclaw cron` CLI subcommands use the same `cron/jobs.jso
 Notes:
 
 - one-time `at_seconds` jobs are deleted after they run
+- one-time jobs whose scheduled time elapsed while the gateway was down are dropped on the next startup (or disabled when they are not marked for deletion), instead of lingering as enabled jobs that never fire
 - recurring jobs stay in the store until removed
 - disabled jobs stay in the store and still appear in `picoclaw cron list`

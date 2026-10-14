@@ -30,6 +30,7 @@ import (
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/status"
 	"github.com/sipeed/picoclaw/cmd/picoclaw/internal/version"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/memlimit"
 	"github.com/sipeed/picoclaw/pkg/updater"
 )
 
@@ -170,6 +171,9 @@ const (
 func main() {
 	// Initialize Termux SSL certificate detection before anything else
 	initTermuxSSL()
+
+	// Apply memory/GC tuning from the environment before any work starts.
+	memlimit.Apply()
 
 	cliui.Init(earlyColorDisabled())
 

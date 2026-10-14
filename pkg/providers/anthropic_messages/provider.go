@@ -6,7 +6,6 @@
 package anthropicmessages
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -86,20 +85,15 @@ func (p *Provider) Chat(
 		return nil, fmt.Errorf("building request body: %w", err)
 	}
 
-	// Serialize to JSON
-	jsonBody, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, fmt.Errorf("serializing request body: %w", err)
-	}
-
 	// Build request URL
 	endpointURL, err := url.JoinPath(p.apiBase, "messages")
 	if err != nil {
 		return nil, fmt.Errorf("building endpoint URL: %w", err)
 	}
 
-	// Create HTTP request
-	req, err := http.NewRequestWithContext(ctx, "POST", endpointURL, bytes.NewReader(jsonBody))
+	// Create HTTP request, streaming the JSON body so the request is not
+	// materialized a second time in memory.
+	req, err := common.NewJSONRequest(ctx, "POST", endpointURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("creating HTTP request: %w", err)
 	}

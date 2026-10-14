@@ -1,12 +1,18 @@
 package common
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
@@ -798,5 +804,189 @@ func TestParseResponse_WithFunctionThoughtSignature(t *testing.T) {
 			out.ToolCalls[0].ExtraContent.Google.ThoughtSignature,
 			"sig456",
 		)
+	}
+}
+
+// --- NewStreamingJSONReader tests ---
+
+func TestNewStreamingJSONReader_RoundTrip(t *testing.T) {
+	payload := map[string]any{
+		"model":    "test-model",
+		"messages": []any{map[string]any{"role": "user", "content": strings.Repeat("z", 64*1024)}},
+		"n":        float64(3),
+	}
+
+	data, err := io.ReadAll(NewStreamingJSONReader(payload))
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("produced invalid JSON: %v", err)
+	}
+	if got["model"] != "test-model" {
+		t.Fatalf("model = %v, want test-model", got["model"])
+	}
+	if got["n"] != float64(3) {
+		t.Fatalf("n = %v, want 3", got["n"])
+	}
+}
+
+func TestNewStreamingJSONReader_EncodeErrorReachesReader(t *testing.T) {
+	_, err := io.ReadAll(NewStreamingJSONReader(map[string]any{"bad": make(chan int)}))
+	if err == nil {
+		t.Fatal("expected an encoding error from the reader")
+	}
+	if !strings.Contains(err.Error(), "serializing request body") {
+		t.Errorf("error %q lacks the serializing request body context", err)
+	}
+	var unsupported *json.UnsupportedTypeError
+	if !errors.As(err, &unsupported) {
+		t.Errorf("error %q does not wrap *json.UnsupportedTypeError", err)
+	}
+}
+
+func TestNewStreamingJSONReader_EncodeErrorFailsRequest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	req, err := NewJSONRequest(context.Background(), http.MethodPost, server.URL, map[string]any{"bad": make(chan int)})
+	if err != nil {
+		t.Fatalf("NewJSONRequest: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("expected Do to fail on an unencodable body")
+	}
+	if !strings.Contains(err.Error(), "serializing request body") {
+		t.Errorf("Do error %q lacks the serializing request body context", err)
+	}
+}
+
+func TestNewStreamingJSONReader_HTTPBody(t *testing.T) {
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("server read: %v", err)
+		}
+		if err := json.Unmarshal(body, &received); err != nil {
+			t.Errorf("server got invalid JSON: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	payload := map[string]any{"hello": "world"}
+	req, err := http.NewRequest(http.MethodPost, server.URL, NewStreamingJSONReader(payload))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	resp.Body.Close()
+
+	if received["hello"] != "world" {
+		t.Fatalf("server received %v, want map[hello:world]", received)
+	}
+}
+
+// --- NewJSONRequest tests ---
+
+func TestNewJSONRequest_GetBodyReplaysBody(t *testing.T) {
+	payload := map[string]any{"model": "m", "text": strings.Repeat("a", 4096)}
+
+	req, err := NewJSONRequest(context.Background(), http.MethodPost, "http://example.invalid", payload)
+	if err != nil {
+		t.Fatalf("NewJSONRequest: %v", err)
+	}
+	if req.GetBody == nil {
+		t.Fatal("GetBody is nil; transport could not replay the body")
+	}
+
+	first, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	replay, err := req.GetBody()
+	if err != nil {
+		t.Fatalf("GetBody: %v", err)
+	}
+	second, err := io.ReadAll(replay)
+	if err != nil {
+		t.Fatalf("read replayed body: %v", err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatalf("replayed body differs from the original")
+	}
+}
+
+func TestNewJSONRequest_BuildFailureDoesNotLeakEncoder(t *testing.T) {
+	baseline := runtime.NumGoroutine()
+
+	// An unparsable URL makes http.NewRequestWithContext fail after the encoder
+	// goroutine has already been started.
+	if _, err := NewJSONRequest(
+		context.Background(),
+		http.MethodPost,
+		"http://[::1",
+		map[string]any{"a": 1},
+	); err == nil {
+		t.Fatal("expected an error for an invalid URL")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > baseline {
+		if time.Now().After(deadline) {
+			t.Fatalf("encoder goroutine still running after request build failed: %d goroutines, baseline %d",
+				runtime.NumGoroutine(), baseline)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestNewJSONRequest_FollowsTemporaryRedirect(t *testing.T) {
+	var received map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("/old", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/new", http.StatusTemporaryRedirect)
+	})
+	mux.HandleFunc("/new", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &received); err != nil {
+			t.Errorf("redirect target got invalid JSON %q: %v", body, err)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	req, err := NewJSONRequest(
+		context.Background(),
+		http.MethodPost,
+		server.URL+"/old",
+		map[string]any{"hello": "world"},
+	)
+	if err != nil {
+		t.Fatalf("NewJSONRequest: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (307 was not followed)", resp.StatusCode)
+	}
+	if received["hello"] != "world" {
+		t.Fatalf("redirect target received %v, want map[hello:world]", received)
 	}
 }
