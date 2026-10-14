@@ -137,6 +137,50 @@ func scaledDimensions(w, h, maxDim int) (int, int) {
 	return nw, nh
 }
 
+// nrgbaReader returns an accessor for src's pixels as non-premultiplied NRGBA.
+// image.Image.At boxes every pixel into a color.Color interface and the model
+// conversion boxes it again, which for a 12 Mpx photo is tens of millions of
+// short-lived heap allocations. The concrete types the JPEG and PNG decoders
+// produce are read directly instead; anything else takes the generic path.
+func nrgbaReader(src image.Image) func(x, y int) color.NRGBA {
+	switch s := src.(type) {
+	case *image.YCbCr:
+		return func(x, y int) color.NRGBA {
+			c := s.YCbCrAt(x, y)
+			r, g, b := color.YCbCrToRGB(c.Y, c.Cb, c.Cr)
+			return color.NRGBA{R: r, G: g, B: b, A: 0xff}
+		}
+	case *image.NRGBA:
+		return s.NRGBAAt
+	case *image.RGBA:
+		return func(x, y int) color.NRGBA {
+			c := s.RGBAAt(x, y)
+			switch c.A {
+			case 0xff:
+				return color.NRGBA{R: c.R, G: c.G, B: c.B, A: 0xff}
+			case 0:
+				return color.NRGBA{}
+			}
+			a := uint32(c.A)
+			return color.NRGBA{
+				R: uint8(uint32(c.R) * 0xff / a),
+				G: uint8(uint32(c.G) * 0xff / a),
+				B: uint8(uint32(c.B) * 0xff / a),
+				A: c.A,
+			}
+		}
+	case *image.Gray:
+		return func(x, y int) color.NRGBA {
+			v := s.GrayAt(x, y).Y
+			return color.NRGBA{R: v, G: v, B: v, A: 0xff}
+		}
+	default:
+		return func(x, y int) color.NRGBA {
+			return color.NRGBAModel.Convert(src.At(x, y)).(color.NRGBA)
+		}
+	}
+}
+
 // boxResample averages each destination pixel over the corresponding source
 // rectangle. This is a straightforward, dependency-free downsampling filter
 // suitable for the large reduction factors used here (source >> target).
@@ -145,6 +189,7 @@ func boxResample(dst *image.NRGBA, src image.Image) {
 	sw, sh := sb.Dx(), sb.Dy()
 	db := dst.Bounds()
 	dw, dh := db.Dx(), db.Dy()
+	at := nrgbaReader(src)
 
 	for dy := 0; dy < dh; dy++ {
 		sy0 := sb.Min.Y + dy*sh/dh
@@ -162,7 +207,7 @@ func boxResample(dst *image.NRGBA, src image.Image) {
 			var r, g, bl, a, n uint32
 			for y := sy0; y < sy1; y++ {
 				for x := sx0; x < sx1; x++ {
-					c := color.NRGBAModel.Convert(src.At(x, y)).(color.NRGBA)
+					c := at(x, y)
 					r += uint32(c.R)
 					g += uint32(c.G)
 					bl += uint32(c.B)

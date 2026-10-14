@@ -200,3 +200,47 @@ func TestEncodeImageToDataURL_DownscalesOriginalOverMaxSize(t *testing.T) {
 		t.Fatal("original over maxSize must be dropped when downscaling is disabled")
 	}
 }
+
+// opaqueImage hides the concrete image type so boxResample takes the generic
+// At/Convert path, giving a reference result for the typed fast paths.
+type opaqueImage struct{ image.Image }
+
+func TestBoxResample_FastPathsMatchGenericPath(t *testing.T) {
+	const w, h = 64, 48
+
+	ycbcr := image.NewYCbCr(image.Rect(0, 0, w, h), image.YCbCrSubsampleRatio420)
+	for i := range ycbcr.Y {
+		ycbcr.Y[i] = uint8(i * 7)
+	}
+	for i := range ycbcr.Cb {
+		ycbcr.Cb[i] = uint8(i*3 + 40)
+		ycbcr.Cr[i] = uint8(i*5 + 90)
+	}
+	nrgba := image.NewNRGBA(image.Rect(0, 0, w, h))
+	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
+	gray := image.NewGray(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			nrgba.SetNRGBA(x, y, color.NRGBA{uint8(x * 4), uint8(y * 5), uint8(x + y), uint8(x*3 + 20)})
+			rgba.SetRGBA(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: uint8(x ^ y), A: uint8(255 - x)})
+			gray.SetGray(x, y, color.Gray{Y: uint8(x*3 + y)})
+		}
+	}
+
+	for name, src := range map[string]image.Image{
+		"ycbcr": ycbcr, "nrgba": nrgba, "rgba": rgba, "gray": gray,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fast := image.NewNRGBA(image.Rect(0, 0, 16, 12))
+			ref := image.NewNRGBA(image.Rect(0, 0, 16, 12))
+			boxResample(fast, src)
+			boxResample(ref, opaqueImage{src})
+			for i := range fast.Pix {
+				// The typed paths round in 8 bits, the generic one in 16.
+				if d := int(fast.Pix[i]) - int(ref.Pix[i]); d < -2 || d > 2 {
+					t.Fatalf("pix[%d] = %d, generic path gives %d", i, fast.Pix[i], ref.Pix[i])
+				}
+			}
+		})
+	}
+}
