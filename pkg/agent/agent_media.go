@@ -19,6 +19,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
+	"github.com/sipeed/picoclaw/pkg/memlimit"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -260,7 +261,12 @@ func encodeImageToDataURL(localPath, mime string, info os.FileInfo, opts mediaRe
 		return ""
 	}
 
-	return buf.String()
+	dataURL := buf.String()
+	// Encoding a large image produces a transient allocation roughly twice the
+	// data URL size; return it to the OS immediately so the resident set does
+	// not stay inflated until the next scheduled GC.
+	memlimit.ReleaseToOS(len(dataURL))
+	return dataURL
 }
 
 func buildArtifactTags(store media.MediaStore, refs []string) []string {
