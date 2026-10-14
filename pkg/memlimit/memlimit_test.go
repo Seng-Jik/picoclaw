@@ -31,7 +31,8 @@ func TestGCPercent(t *testing.T) {
 		{"", 0, false},
 		{"100", 100, true},
 		{"0", 0, true},
-		{"-1", 0, false},
+		{"-1", -1, true},
+		{"off", -1, true},
 		{"x", 0, false},
 	}
 	for _, tt := range tests {

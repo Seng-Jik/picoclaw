@@ -56,14 +56,18 @@ func memoryLimitBytes(v string) (int64, bool) {
 }
 
 // gcPercent parses a GOGC-style percentage. Empty or invalid values report
-// ok=false. 0 is valid but does not disable the GC: it makes the collector run
+// ok=false. A negative value or "off" disables the GC (typically paired with a
+// memory limit); 0 is valid but does not disable it: it makes the collector run
 // almost continuously.
 func gcPercent(v string) (int, bool) {
 	if v == "" {
 		return 0, false
 	}
+	if v == "off" {
+		return -1, true
+	}
 	pct, err := strconv.Atoi(v)
-	if err != nil || pct < 0 {
+	if err != nil {
 		return 0, false
 	}
 	return pct, true
