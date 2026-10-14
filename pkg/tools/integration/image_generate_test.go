@@ -381,6 +381,26 @@ func TestImageGenerateResponseLimitBoundary(t *testing.T) {
 	}
 }
 
+func TestValidateGeneratedImage(t *testing.T) {
+	if _, _, err := validateGeneratedImage(nil, 0); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("empty image error = %v, want an empty image error", err)
+	}
+	contentType, ext, err := validateGeneratedImage([]byte("\x89PNG\r\n\x1a\n"), 8)
+	if err != nil || contentType != "image/png" || ext != ".png" {
+		t.Fatalf("png = %q %q, error = %v", contentType, ext, err)
+	}
+	if _, _, err := validateGeneratedImage([]byte("<html></html>"), 13); err == nil {
+		t.Fatal("expected an unsupported format error")
+	}
+}
+
+func TestImageSink_ZeroLimitRejectsEverything(t *testing.T) {
+	// A zero limit must fail closed instead of meaning "unlimited".
+	if _, err := newImageSink(io.Discard, 0).Write([]byte("x")); !errors.Is(err, errGeneratedImageTooLarge) {
+		t.Fatalf("error = %v, want errGeneratedImageTooLarge", err)
+	}
+}
+
 func TestImageSink_RejectsOversizedStream(t *testing.T) {
 	// downloadImage copies the HTTP body into the sink with io.Copy; whatever the
 	// chunking, exactly `limit` bytes may land on disk and the next byte fails.

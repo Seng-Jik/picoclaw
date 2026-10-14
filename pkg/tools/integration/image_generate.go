@@ -152,7 +152,7 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args map[string]any) *t
 		removeFile()
 		return tools.ErrorResult(err.Error()).WithError(err)
 	}
-	contentType, ext, err := validateGeneratedImage(sink.header, sink.n, t.maxFileSize)
+	contentType, ext, err := validateGeneratedImage(sink.header, sink.n)
 	if err != nil {
 		removeFile()
 		return tools.ErrorResult(err.Error())
@@ -440,7 +440,7 @@ func newImageSink(w io.Writer, limit int) *imageSink {
 }
 
 func (s *imageSink) Write(p []byte) (int, error) {
-	if s.limit > 0 && s.n+len(p) > s.limit {
+	if s.n+len(p) > s.limit {
 		return 0, errGeneratedImageTooLarge
 	}
 	if len(s.header) < imageHeaderSniffLen {
@@ -455,9 +455,11 @@ func (s *imageSink) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func validateGeneratedImage(header []byte, size, maxSize int) (string, string, error) {
-	if size == 0 || size > maxSize {
-		return "", "", fmt.Errorf("generated image is empty or exceeds the configured media size limit")
+// validateGeneratedImage detects the image format from the leading bytes. The
+// media size limit is already enforced by imageSink while the image is written.
+func validateGeneratedImage(header []byte, size int) (string, string, error) {
+	if size == 0 {
+		return "", "", fmt.Errorf("generated image is empty")
 	}
 	contentType := http.DetectContentType(header)
 	switch contentType {
