@@ -57,7 +57,10 @@ func currentTurnMessages(messages []providers.Message, currentTurnStart int) []p
 // Only tool messages from the current turn may emit the synthetic user
 // follow-up; historical tool results stay as plain path-tagged history.
 // Non-image files always get path tags regardless of role.
-// Returns a new slice; original messages are not mutated.
+// Original messages are never mutated. Returns a new slice when any message
+// carries media; with a nil store or no media at all there is nothing to
+// resolve and the input slice itself is returned, so callers must not assume
+// the result is an independent copy.
 func resolveMediaRefs(
 	messages []providers.Message,
 	store media.MediaStore,
