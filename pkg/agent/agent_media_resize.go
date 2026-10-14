@@ -52,10 +52,15 @@ func downscaleToDataURL(localPath, mime string, maxDim, quality int) (string, bo
 	}
 	defer f.Close()
 
-	// Read only the header first so an image declaring absurd dimensions is
-	// rejected before any pixel buffer is allocated.
+	// Read only the header first: images already within the cap are skipped
+	// without decoding, and ones declaring absurd dimensions are rejected
+	// before any pixel buffer is allocated.
 	cfg, _, err := image.DecodeConfig(f)
 	if err != nil {
+		return "", false
+	}
+	// Already within the cap: nothing to do, and the pixels never get decoded.
+	if cfg.Width <= maxDim && cfg.Height <= maxDim {
 		return "", false
 	}
 	if int64(cfg.Width)*int64(cfg.Height) > maxDecodePixels {
@@ -76,12 +81,7 @@ func downscaleToDataURL(localPath, mime string, maxDim, quality int) (string, bo
 	}
 
 	b := src.Bounds()
-	w, h := b.Dx(), b.Dy()
-	if w <= maxDim && h <= maxDim {
-		return "", false
-	}
-
-	nw, nh := scaledDimensions(w, h, maxDim)
+	nw, nh := scaledDimensions(b.Dx(), b.Dy(), maxDim)
 	dst := image.NewNRGBA(image.Rect(0, 0, nw, nh))
 	boxResample(dst, src)
 
