@@ -8,10 +8,11 @@
 package memlimit
 
 import (
-	"log"
 	"os"
 	"runtime/debug"
 	"strconv"
+
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 // Environment variables understood by Apply.
@@ -33,12 +34,12 @@ func Apply() {
 	if bytes, ok := memoryLimitBytes(os.Getenv(EnvMemoryLimitMB)); ok {
 		debug.SetMemoryLimit(bytes)
 	} else if v := os.Getenv(EnvMemoryLimitMB); v != "" {
-		log.Printf("memlimit: ignoring invalid %s=%q", EnvMemoryLimitMB, v)
+		logger.Warnf("memlimit: ignoring invalid %s=%q", EnvMemoryLimitMB, v)
 	}
 	if pct, ok := gcPercent(os.Getenv(EnvGOGC)); ok {
 		debug.SetGCPercent(pct)
 	} else if v := os.Getenv(EnvGOGC); v != "" {
-		log.Printf("memlimit: ignoring invalid %s=%q", EnvGOGC, v)
+		logger.Warnf("memlimit: ignoring invalid %s=%q", EnvGOGC, v)
 	}
 }
 
