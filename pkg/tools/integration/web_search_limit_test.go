@@ -22,16 +22,13 @@ func (b *countingBody) Read(p []byte) (int, error) {
 	if b.remaining <= 0 {
 		return 0, io.EOF
 	}
+	p = p[:min(len(p), b.remaining)]
 	n := len(p)
-	if n > b.remaining {
-		n = b.remaining
+	for i := range p {
+		p[i] = 'x'
 	}
-	for i := 0; i < n; i++ {
-		if pos := b.read + i; pos < len(b.prefix) {
-			p[i] = b.prefix[pos]
-		} else {
-			p[i] = 'x'
-		}
+	if b.read < len(b.prefix) {
+		copy(p, b.prefix[b.read:])
 	}
 	b.remaining -= n
 	b.read += n
