@@ -326,6 +326,32 @@ func TestImageGenerateResponseLimitFollowsMediaLimit(t *testing.T) {
 	}
 }
 
+func TestImageGenerateResponseLimitBoundary(t *testing.T) {
+	const maxSize = 1024
+	limit := base64.StdEncoding.EncodedLen(maxSize) + imageResponseMargin
+	for _, tt := range []struct {
+		name    string
+		size    int
+		wantErr bool
+	}{
+		{"exactly the limit", limit, false},
+		{"one byte over the limit", limit + 1, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write(bytes.Repeat([]byte("x"), tt.size))
+			}))
+			defer server.Close()
+
+			tool := NewImageGenerateTool(nil, maxSize, nil)
+			_, err := tool.postJSON(context.Background(), server.Client(), server.URL, "", "", nil)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("postJSON error = %v, want error = %t", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestImageSink_RejectsOversizedStream(t *testing.T) {
 	// downloadImage copies the HTTP body into the sink with io.Copy; whatever the
 	// chunking, exactly `limit` bytes may land on disk and the next byte fails.

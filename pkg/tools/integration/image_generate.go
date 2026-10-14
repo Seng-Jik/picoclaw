@@ -318,6 +318,13 @@ func writeBase64Image(dst io.Writer, encoded string) error {
 	return err
 }
 
+// imageResponseMargin is the room a buffered image response keeps, on top of the
+// base64-encoded image itself, for the JSON envelope (usage, revised prompt,
+// text parts, ...). The cap assumes one image per response: Gemini only
+// returns its interim "thought" images when thoughts are requested, which
+// generateGeminiImage does not do. Requesting them would need a larger margin.
+const imageResponseMargin = 1 << 20
+
 func (t *ImageGenerateTool) postJSON(
 	ctx context.Context,
 	client *http.Client,
@@ -341,9 +348,9 @@ func (t *ImageGenerateTool) postJSON(
 	}
 	defer resp.Body.Close()
 	// Bound the buffered response to what a base64-encoded image within the
-	// configured media limit can occupy (plus a small margin for JSON
-	// envelopes), instead of always reading a fixed 32 MB.
-	responseLimit := int64(base64.StdEncoding.EncodedLen(t.maxFileSize)) + (1 << 20)
+	// configured media limit can occupy, instead of always reading a fixed
+	// 32 MB.
+	responseLimit := int64(base64.StdEncoding.EncodedLen(t.maxFileSize)) + imageResponseMargin
 	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, responseLimit+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read image model response: %w", err)
