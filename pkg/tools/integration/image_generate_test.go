@@ -157,6 +157,35 @@ func TestWriteBase64Image_StreamsToWriter(t *testing.T) {
 	}
 }
 
+func TestWriteBase64Image_ErrorWording(t *testing.T) {
+	valid := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("x"), 64))
+	tests := []struct {
+		name       string
+		encoded    string
+		limit      int
+		wantDecode bool
+		wantTooBig bool
+	}{
+		{"malformed base64", "!!!not-base64!!!", 1024, true, false},
+		{"truncated base64", valid[:len(valid)-1], 1024, true, false},
+		{"image over the limit", valid, 16, false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := writeBase64Image(newImageSink(io.Discard, tt.limit), tt.encoded)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if got := strings.Contains(err.Error(), "failed to decode image data"); got != tt.wantDecode {
+				t.Fatalf("error = %q, decode wording = %t, want %t", err, got, tt.wantDecode)
+			}
+			if got := errors.Is(err, errGeneratedImageTooLarge); got != tt.wantTooBig {
+				t.Fatalf("error = %q, too large = %t, want %t", err, got, tt.wantTooBig)
+			}
+		})
+	}
+}
+
 func TestGenerateOpenRouterImage_RejectsOversized(t *testing.T) {
 	image := bytes.Repeat([]byte("x"), 4096)
 	client := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {

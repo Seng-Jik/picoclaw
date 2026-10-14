@@ -257,10 +257,7 @@ func (t *ImageGenerateTool) generateOpenRouterImage(
 	if len(response.Data) == 0 || response.Data[0].B64JSON == "" {
 		return fmt.Errorf("OpenRouter returned no image data")
 	}
-	if err := writeBase64Image(dst, response.Data[0].B64JSON); err != nil {
-		return fmt.Errorf("failed to decode OpenRouter image data: %w", err)
-	}
-	return nil
+	return writeBase64Image(dst, response.Data[0].B64JSON)
 }
 
 func (t *ImageGenerateTool) generateGeminiImage(
@@ -320,9 +317,15 @@ func (t *ImageGenerateTool) generateGeminiImage(
 
 // writeBase64Image streams a base64-encoded image into dst without decoding it
 // into a temporary []byte, so the decoded bytes are never held in memory.
+// Malformed base64 is reported as a decode error; errors coming from dst (such
+// as errGeneratedImageTooLarge) are returned as they are.
 func writeBase64Image(dst io.Writer, encoded string) error {
 	decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(encoded))
 	_, err := io.Copy(dst, decoder)
+	var corrupt base64.CorruptInputError
+	if errors.As(err, &corrupt) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return fmt.Errorf("failed to decode image data: %w", err)
+	}
 	return err
 }
 
