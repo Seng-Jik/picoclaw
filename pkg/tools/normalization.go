@@ -200,7 +200,6 @@ func buildLargeResultPreview(text string, total, maxRunes int) (preview string, 
 		tailBudget = 0
 	}
 
-	runes := []rune(text)
 	// Defensive: never let the preview cover the whole text, otherwise there is
 	// nothing to omit and no reason to spill.
 	if headBudget+tailBudget >= total {
@@ -215,12 +214,25 @@ func buildLargeResultPreview(text string, total, maxRunes int) (preview string, 
 	tailRunes = tailBudget
 	omitted = total - headBudget - tailBudget
 
-	head := string(runes[:headBudget])
+	// Walk only the head and tail windows instead of converting the whole text
+	// to []rune: tool output can be tens of MB while the preview is ~3KB.
+	headEnd := 0
+	for i := 0; i < headBudget; i++ {
+		_, w := utf8.DecodeRuneInString(text[headEnd:])
+		headEnd += w
+	}
+	tailStart := len(text)
+	for i := 0; i < tailBudget; i++ {
+		_, w := utf8.DecodeLastRuneInString(text[:tailStart])
+		tailStart -= w
+	}
+
+	head := text[:headEnd]
 	if tailBudget == 0 {
 		return fmt.Sprintf("%s\n\n[... %d characters truncated ...]", head, omitted),
 			omitted, headRunes, tailRunes
 	}
-	tail := string(runes[total-tailBudget:])
+	tail := text[tailStart:]
 	return fmt.Sprintf("%s\n\n[... %d characters truncated ...]\n\n%s", head, omitted, tail),
 		omitted, headRunes, tailRunes
 }

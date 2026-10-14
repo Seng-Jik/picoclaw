@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -296,5 +297,42 @@ func TestToolRegistry_CloneCopiesSpillSettings(t *testing.T) {
 	}
 	if clone.maxInlineResultRunes != 1234 {
 		t.Fatalf("clone maxInlineResultRunes = %d, want 1234", clone.maxInlineResultRunes)
+	}
+}
+
+func TestBuildLargeResultPreview_MultibyteBoundaries(t *testing.T) {
+	// 'é' is 2 bytes, '世' is 3 bytes: slicing by byte instead of rune would
+	// split a character and produce invalid UTF-8.
+	text := strings.Repeat("é", 40) + strings.Repeat("世", 40) + strings.Repeat("x", 40)
+	total := utf8.RuneCountInString(text)
+
+	preview, omitted, headRunes, tailRunes := buildLargeResultPreview(text, total, 30)
+
+	if !utf8.ValidString(preview) {
+		t.Fatalf("preview is not valid UTF-8: %q", preview)
+	}
+	if headRunes+tailRunes != 30 || omitted != total-30 {
+		t.Fatalf("unexpected budgets: head=%d tail=%d omitted=%d", headRunes, tailRunes, omitted)
+	}
+	if !strings.HasPrefix(preview, strings.Repeat("é", headRunes)) {
+		t.Fatalf("expected preview to start with %d head runes, got %q", headRunes, preview)
+	}
+	if !strings.HasSuffix(preview, strings.Repeat("x", tailRunes)) {
+		t.Fatalf("expected preview to end with %d tail runes, got %q", tailRunes, preview)
+	}
+}
+
+func TestBuildLargeResultPreview_DoesNotCopyWholeText(t *testing.T) {
+	text := strings.Repeat("a", 4<<20)
+	total := utf8.RuneCountInString(text)
+
+	// A []rune copy of the input would allocate ~4x its size (16MB here); the
+	// preview itself only needs a few KB.
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	buildLargeResultPreview(text, total, 16*1024)
+	runtime.ReadMemStats(&after)
+	if grown := after.TotalAlloc - before.TotalAlloc; grown > 64<<10 {
+		t.Fatalf("preview allocated %d bytes for a %d byte input", grown, len(text))
 	}
 }
