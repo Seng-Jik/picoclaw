@@ -8,9 +8,10 @@ import (
 )
 
 // countingBody is an io.ReadCloser that yields a large, bounded number of
-// bytes and records how many were actually read, so tests can assert that a
-// provider clamps its response buffering.
+// bytes (prefix first, then 'x' filler) and records how many were actually
+// read, so tests can assert that a provider clamps its response buffering.
 type countingBody struct {
+	prefix    string
 	remaining int
 	read      int
 }
@@ -24,7 +25,11 @@ func (b *countingBody) Read(p []byte) (int, error) {
 		n = b.remaining
 	}
 	for i := 0; i < n; i++ {
-		p[i] = 'x'
+		if pos := b.read + i; pos < len(b.prefix) {
+			p[i] = b.prefix[pos]
+		} else {
+			p[i] = 'x'
+		}
 	}
 	b.remaining -= n
 	b.read += n
@@ -54,6 +59,10 @@ func TestSearchProviders_ClampResponseSize(t *testing.T) {
 	// Deliberately larger than maxSearchResponseBytes so the clamp is exercised.
 	const payload = maxSearchResponseBytes + (1 << 20)
 
+	// Streaming JSON decoders bail out at the first invalid byte, so the body
+	// opens like a valid response and never closes: only the clamp stops them.
+	const prefix = `{"results":[{"title":"`
+
 	tests := []struct {
 		name     string
 		provider func(*http.Client) SearchProvider
@@ -82,11 +91,17 @@ func TestSearchProviders_ClampResponseSize(t *testing.T) {
 				return &PerplexitySearchProvider{keyPool: NewAPIKeyPool([]string{"test-key"}), client: c}
 			},
 		},
+		{
+			name: "searxng",
+			provider: func(c *http.Client) SearchProvider {
+				return &SearXNGSearchProvider{baseURL: "http://searxng.test", client: c}
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			body := &countingBody{remaining: payload}
+			body := &countingBody{prefix: prefix, remaining: payload}
 			p := tt.provider(oversizedClient(body))
 
 			if _, err := p.Search(context.Background(), "picoclaw", 5, ""); err != nil {

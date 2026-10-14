@@ -1419,7 +1419,7 @@ func (p *SearXNGSearchProvider) Search(
 		} `json:"results"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSearchResponseBytes)).Decode(&result); err != nil {
 		return "", fmt.Errorf("failed to parse response: %w", err)
 	}
 
