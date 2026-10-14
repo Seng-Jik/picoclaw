@@ -42,7 +42,7 @@ const (
 	// is buffered in memory. Search providers return compact JSON; anything
 	// larger is either an error page or a misbehaving upstream, and reading it
 	// unbounded could exhaust RAM on constrained devices.
-	maxSearchResponseBytes = 4 << 20 // 4 MiB
+	maxSearchResponseBytes = 2 << 20 // 2 MiB
 
 	keenableDefaultBaseURL = "https://api.keenable.ai"
 	// keenableAppTitle identifies PicoClaw to Keenable's public (keyless)
@@ -685,7 +685,7 @@ func (p *KeenableSearchProvider) Search(
 			continue
 		}
 
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
 		_ = resp.Body.Close()
 		if err != nil {
 			lastErr = fmt.Errorf("failed to read response: %w", err)
@@ -835,7 +835,7 @@ func fallbackKagiSearchResults(resp *http.Response, count int) ([]SearchResultIt
 	if resp == nil || resp.Body == nil {
 		return nil, fmt.Errorf("failed to parse response: empty response body")
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
@@ -995,7 +995,7 @@ func (p *GeminiSearchProvider) Search(
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}
@@ -1081,7 +1081,7 @@ func (p *SogouSearchProvider) Search(
 			return "", fmt.Errorf("request failed: %w", err)
 		}
 
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
 		_ = resp.Body.Close()
 		if err != nil {
 			return "", fmt.Errorf("failed to read response: %w", err)
@@ -1499,7 +1499,7 @@ func (p *GLMSearchProvider) Search(
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}
@@ -1595,7 +1595,7 @@ func (p *BaiduSearchProvider) Search(
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSearchResponseBytes))
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}
