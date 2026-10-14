@@ -186,6 +186,10 @@ func persistLargeResultArtifact(result *ToolResult, toolName, workspace string, 
 // is bounded so inline context stays small while keeping the most useful parts:
 // the head (which for read_file includes its native truncation/offset guidance)
 // and the tail. The middle omission marker carries the real omitted count.
+//
+// Callers must only pass oversized text: total > maxRunes > 0. That guarantees
+// headBudget+tailBudget <= maxRunes < total, so something is always omitted and
+// both budgets are positive.
 func buildLargeResultPreview(text string, total, maxRunes int) (preview string, omitted, headRunes, tailRunes int) {
 	headBudget := largeResultPreviewHeadRunes
 	tailBudget := largeResultPreviewTailRunes
@@ -193,22 +197,6 @@ func buildLargeResultPreview(text string, total, maxRunes int) (preview string, 
 		// Small caps (e.g. tests): scale the preview down so it fits.
 		headBudget = maxRunes * 2 / 3
 		tailBudget = maxRunes - headBudget
-	}
-	if headBudget < 0 {
-		headBudget = 0
-	}
-	if tailBudget < 0 {
-		tailBudget = 0
-	}
-
-	// Defensive: never let the preview cover the whole text, otherwise there is
-	// nothing to omit and no reason to spill.
-	if headBudget+tailBudget >= total {
-		headBudget = total / 2
-		tailBudget = total - headBudget - 1
-		if tailBudget < 0 {
-			tailBudget = 0
-		}
 	}
 
 	headRunes = headBudget
@@ -228,12 +216,7 @@ func buildLargeResultPreview(text string, total, maxRunes int) (preview string, 
 		tailStart -= w
 	}
 
-	head := text[:headEnd]
-	if tailBudget == 0 {
-		return fmt.Sprintf("%s\n\n[... %d characters truncated ...]", head, omitted),
-			omitted, headRunes, tailRunes
-	}
-	tail := text[tailStart:]
+	head, tail := text[:headEnd], text[tailStart:]
 	return fmt.Sprintf("%s\n\n[... %d characters truncated ...]\n\n%s", head, omitted, tail),
 		omitted, headRunes, tailRunes
 }

@@ -348,6 +348,34 @@ func TestBuildLargeResultPreview_MultibyteBoundaries(t *testing.T) {
 	}
 }
 
+func TestBuildLargeResultPreview_BudgetInvariants(t *testing.T) {
+	// For any oversized input (total > maxRunes > 0) the preview must omit at
+	// least one rune and keep a non-empty tail; the builder relies on this
+	// instead of re-checking it.
+	caps := []int{1, 2, 3, 7, 30, 3071, 3072, 3073, 16 * 1024}
+	for _, maxRunes := range caps {
+		for _, extra := range []int{1, 2, 5000} {
+			total := maxRunes + extra
+			text := strings.Repeat("é", total)
+
+			preview, omitted, headRunes, tailRunes := buildLargeResultPreview(text, total, maxRunes)
+
+			if headRunes < 0 || tailRunes < 1 {
+				t.Fatalf("max=%d total=%d: bad budgets head=%d tail=%d", maxRunes, total, headRunes, tailRunes)
+			}
+			if headRunes+tailRunes > maxRunes {
+				t.Fatalf("max=%d total=%d: preview %d+%d exceeds cap", maxRunes, total, headRunes, tailRunes)
+			}
+			if omitted != total-headRunes-tailRunes || omitted < 1 {
+				t.Fatalf("max=%d total=%d: omitted=%d", maxRunes, total, omitted)
+			}
+			if !utf8.ValidString(preview) {
+				t.Fatalf("max=%d total=%d: invalid UTF-8 preview", maxRunes, total)
+			}
+		}
+	}
+}
+
 func TestBuildLargeResultPreview_DoesNotCopyWholeText(t *testing.T) {
 	text := strings.Repeat("a", 4<<20)
 	total := utf8.RuneCountInString(text)
