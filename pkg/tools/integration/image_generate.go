@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -112,42 +113,60 @@ func (t *ImageGenerateTool) Execute(ctx context.Context, args map[string]any) *t
 		return tools.ErrorResult("aspect_ratio must be square, landscape, or portrait")
 	}
 
-	var imageBytes []byte
+	apiKey := modelCfg.APIKey()
+	var generate func(dst io.Writer) error
 	switch protocol {
 	case "openai":
-		imageBytes, _, err = t.generateOpenAIImage(ctx, client, apiBase, modelCfg.APIKey(), modelID, prompt, aspect)
+		generate = func(dst io.Writer) error {
+			return t.generateOpenAIImage(ctx, client, apiBase, apiKey, modelID, prompt, aspect, dst)
+		}
 	case "gemini":
-		imageBytes, _, err = t.generateGeminiImage(ctx, client, apiBase, modelCfg.APIKey(), modelID, prompt, aspect)
+		generate = func(dst io.Writer) error {
+			return t.generateGeminiImage(ctx, client, apiBase, apiKey, modelID, prompt, aspect, dst)
+		}
 	case "openrouter":
-		imageBytes, err = t.generateOpenRouterImage(ctx, client, apiBase, modelCfg.APIKey(), modelID, prompt)
+		generate = func(dst io.Writer) error {
+			return t.generateOpenRouterImage(ctx, client, apiBase, apiKey, modelID, prompt, dst)
+		}
 	default:
 		return tools.ErrorResult(fmt.Sprintf(
 			"image generation is not implemented for provider %q; select an OpenAI, Gemini, or OpenRouter image model",
 			protocol,
 		))
 	}
-	if err != nil {
-		return tools.ErrorResult(err.Error()).WithError(err)
-	}
-	contentType, ext, err := validateGeneratedImage(imageBytes, t.maxFileSize)
-	if err != nil {
-		return tools.ErrorResult(err.Error())
-	}
 
-	file, err := os.CreateTemp("", "picoclaw-generated-*"+ext)
+	// Write the decoded image straight to disk through a size-bounded sink, so
+	// the decoded bytes are never held in memory alongside the base64 payload.
+	file, err := os.CreateTemp("", "picoclaw-generated-*")
 	if err != nil {
 		return tools.ErrorResult(fmt.Sprintf("failed to create generated image file: %v", err))
 	}
 	path := file.Name()
-	if _, writeErr := file.Write(imageBytes); writeErr != nil {
+	removeFile := func() {
 		_ = file.Close()
 		_ = os.Remove(path)
-		return tools.ErrorResult(fmt.Sprintf("failed to save generated image: %v", writeErr))
+	}
+
+	sink := newImageSink(file, t.maxFileSize)
+	if err = generate(sink); err != nil {
+		removeFile()
+		return tools.ErrorResult(err.Error()).WithError(err)
+	}
+	contentType, ext, err := validateGeneratedImage(sink.header, sink.n)
+	if err != nil {
+		removeFile()
+		return tools.ErrorResult(err.Error())
 	}
 	if closeErr := file.Close(); closeErr != nil {
 		_ = os.Remove(path)
 		return tools.ErrorResult(fmt.Sprintf("failed to close generated image: %v", closeErr))
 	}
+	finalPath := path + ext
+	if renameErr := os.Rename(path, finalPath); renameErr != nil {
+		_ = os.Remove(path)
+		return tools.ErrorResult(fmt.Sprintf("failed to finalize generated image: %v", renameErr))
+	}
+	path = finalPath
 
 	scope := fmt.Sprintf("tool:image_generate:%s:%s", channel, chatID)
 	ref, err := t.mediaStore.Store(path, media.MediaMeta{
@@ -170,7 +189,8 @@ func (t *ImageGenerateTool) generateOpenAIImage(
 	ctx context.Context,
 	client *http.Client,
 	apiBase, apiKey, model, prompt, aspect string,
-) ([]byte, string, error) {
+	dst io.Writer,
+) error {
 	size := "1024x1024"
 	switch aspect {
 	case "landscape":
@@ -185,11 +205,11 @@ func (t *ImageGenerateTool) generateOpenAIImage(
 		"n":      1,
 	})
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to encode image request: %w", err)
+		return fmt.Errorf("failed to encode image request: %w", err)
 	}
 	respBody, err := t.postJSON(ctx, client, strings.TrimRight(apiBase, "/")+"/images/generations", apiKey, "", body)
 	if err != nil {
-		return nil, "", err
+		return err
 	}
 	var response struct {
 		Data []struct {
@@ -198,33 +218,33 @@ func (t *ImageGenerateTool) generateOpenAIImage(
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(respBody, &response); err != nil || len(response.Data) == 0 {
-		return nil, "", fmt.Errorf("image model returned no image data")
+		return fmt.Errorf("image model returned no image data")
 	}
 	if encoded := response.Data[0].B64JSON; encoded != "" {
-		data, err := base64.StdEncoding.DecodeString(encoded)
-		return data, "", err
+		return writeBase64Image(dst, encoded)
 	}
 	if response.Data[0].URL == "" {
-		return nil, "", fmt.Errorf("image model returned neither image data nor a URL")
+		return fmt.Errorf("image model returned neither image data nor a URL")
 	}
-	return t.downloadImage(ctx, response.Data[0].URL)
+	return t.downloadImage(ctx, response.Data[0].URL, dst)
 }
 
 func (t *ImageGenerateTool) generateOpenRouterImage(
 	ctx context.Context,
 	client *http.Client,
 	apiBase, apiKey, model, prompt string,
-) ([]byte, error) {
+	dst io.Writer,
+) error {
 	body, err := json.Marshal(map[string]any{
 		"model":  model,
 		"prompt": prompt,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to encode image request: %w", err)
+		return fmt.Errorf("failed to encode image request: %w", err)
 	}
 	respBody, err := t.postJSON(ctx, client, strings.TrimRight(apiBase, "/")+"/images", apiKey, "", body)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	var response struct {
 		Data []struct {
@@ -232,23 +252,20 @@ func (t *ImageGenerateTool) generateOpenRouterImage(
 		} `json:"data"`
 	}
 	if err = json.Unmarshal(respBody, &response); err != nil {
-		return nil, fmt.Errorf("failed to decode OpenRouter image response: %w", err)
+		return fmt.Errorf("failed to decode OpenRouter image response: %w", err)
 	}
 	if len(response.Data) == 0 || response.Data[0].B64JSON == "" {
-		return nil, fmt.Errorf("OpenRouter returned no image data")
+		return fmt.Errorf("OpenRouter returned no image data")
 	}
-	imageBytes, err := base64.StdEncoding.DecodeString(response.Data[0].B64JSON)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode OpenRouter image data: %w", err)
-	}
-	return imageBytes, nil
+	return writeBase64Image(dst, response.Data[0].B64JSON)
 }
 
 func (t *ImageGenerateTool) generateGeminiImage(
 	ctx context.Context,
 	client *http.Client,
 	apiBase, apiKey, model, prompt, aspect string,
-) ([]byte, string, error) {
+	dst io.Writer,
+) error {
 	body, err := json.Marshal(map[string]any{
 		"contents": []any{map[string]any{
 			"parts": []any{map[string]string{"text": prompt}},
@@ -265,12 +282,12 @@ func (t *ImageGenerateTool) generateGeminiImage(
 		},
 	})
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to encode image request: %w", err)
+		return fmt.Errorf("failed to encode image request: %w", err)
 	}
 	endpoint := strings.TrimRight(apiBase, "/") + "/models/" + url.PathEscape(model) + ":generateContent"
 	respBody, err := t.postJSON(ctx, client, endpoint, "", apiKey, body)
 	if err != nil {
-		return nil, "", err
+		return err
 	}
 	var response struct {
 		Candidates []struct {
@@ -285,19 +302,39 @@ func (t *ImageGenerateTool) generateGeminiImage(
 		} `json:"candidates"`
 	}
 	if err := json.Unmarshal(respBody, &response); err != nil {
-		return nil, "", fmt.Errorf("failed to decode image model response: %w", err)
+		return fmt.Errorf("failed to decode image model response: %w", err)
 	}
 	for _, candidate := range response.Candidates {
 		for _, part := range candidate.Content.Parts {
 			if part.InlineData.Data == "" {
 				continue
 			}
-			data, err := base64.StdEncoding.DecodeString(part.InlineData.Data)
-			return data, part.InlineData.MIMEType, err
+			return writeBase64Image(dst, part.InlineData.Data)
 		}
 	}
-	return nil, "", fmt.Errorf("image model returned no image data; verify the selected model supports image output")
+	return fmt.Errorf("image model returned no image data; verify the selected model supports image output")
 }
+
+// writeBase64Image streams a base64-encoded image into dst without decoding it
+// into a temporary []byte, so the decoded bytes are never held in memory.
+// Malformed base64 is reported as a decode error; errors coming from dst (such
+// as errGeneratedImageTooLarge) are returned as they are.
+func writeBase64Image(dst io.Writer, encoded string) error {
+	decoder := base64.NewDecoder(base64.StdEncoding, strings.NewReader(encoded))
+	_, err := io.Copy(dst, decoder)
+	var corrupt base64.CorruptInputError
+	if errors.As(err, &corrupt) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return fmt.Errorf("failed to decode image data: %w", err)
+	}
+	return err
+}
+
+// imageResponseMargin is the room a buffered image response keeps, on top of the
+// base64-encoded image itself, for the JSON envelope (usage, revised prompt,
+// text parts, ...). The cap assumes one image per response: Gemini only
+// returns its interim "thought" images when thoughts are requested, which
+// generateGeminiImage does not do. Requesting them would need a larger margin.
+const imageResponseMargin = 1 << 20
 
 func (t *ImageGenerateTool) postJSON(
 	ctx context.Context,
@@ -321,10 +358,19 @@ func (t *ImageGenerateTool) postJSON(
 		return nil, fmt.Errorf("image generation request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	responseLimit := int64(32 << 20)
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		responseLimit = max(responseLimit, int64(base64.StdEncoding.EncodedLen(t.maxFileSize))+(1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Only a short snippet of an error body is useful, and it ends up in the
+		// tool result the LLM sees, so never buffer the whole thing.
+		snippet, readErr := io.ReadAll(io.LimitReader(resp.Body, imageErrorBodyLimit+1))
+		if readErr != nil {
+			return nil, fmt.Errorf("image model returned HTTP %d", resp.StatusCode)
+		}
+		return nil, fmt.Errorf("image model returned HTTP %d: %s", resp.StatusCode, errorBodySnippet(snippet))
 	}
+	// Bound the buffered response to what a base64-encoded image within the
+	// configured media limit can occupy, instead of always reading a fixed
+	// 32 MB.
+	responseLimit := int64(base64.StdEncoding.EncodedLen(t.maxFileSize)) + imageResponseMargin
 	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, responseLimit+1))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read image model response: %w", err)
@@ -332,24 +378,35 @@ func (t *ImageGenerateTool) postJSON(
 	if int64(len(responseBody)) > responseLimit {
 		return nil, fmt.Errorf("image model response exceeds the configured media size limit")
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf(
-			"image model returned HTTP %d: %s",
-			resp.StatusCode,
-			strings.TrimSpace(string(responseBody)),
-		)
-	}
 	return responseBody, nil
 }
 
-func (t *ImageGenerateTool) downloadImage(ctx context.Context, rawURL string) ([]byte, string, error) {
+// imageErrorBodyLimit is how many bytes of a non-2xx response body are kept for
+// the error message.
+const imageErrorBodyLimit = 1024
+
+// errorBodySnippet turns the start of an error response body into a short,
+// valid UTF-8 string, marking it with "..." when the body was cut.
+func errorBodySnippet(body []byte) string {
+	truncated := len(body) > imageErrorBodyLimit
+	if truncated {
+		body = body[:imageErrorBodyLimit]
+	}
+	snippet := strings.TrimSpace(strings.ToValidUTF8(string(body), ""))
+	if truncated {
+		snippet += "..."
+	}
+	return snippet
+}
+
+func (t *ImageGenerateTool) downloadImage(ctx context.Context, rawURL string, dst io.Writer) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil || parsed.Scheme != "https" || !isPublicImageHost(parsed.Hostname()) {
-		return nil, "", fmt.Errorf("image model returned an invalid image URL")
+		return fmt.Errorf("image model returned an invalid image URL")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to create image download request: %w", err)
+		return fmt.Errorf("failed to create image download request: %w", err)
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
@@ -367,28 +424,64 @@ func (t *ImageGenerateTool) downloadImage(ctx context.Context, rawURL string) ([
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, "", fmt.Errorf("image download failed: %w", err)
+		return fmt.Errorf("image download failed: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, "", fmt.Errorf("image download returned HTTP %d", resp.StatusCode)
+		return fmt.Errorf("image download returned HTTP %d", resp.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(t.maxFileSize)+1))
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to read generated image: %w", err)
+	if _, err := io.Copy(dst, resp.Body); err != nil {
+		return fmt.Errorf("failed to read generated image: %w", err)
 	}
-	return data, resp.Header.Get("Content-Type"), nil
+	return nil
 }
 
-func validateGeneratedImage(data []byte, maxSize int) (string, string, error) {
-	if len(data) == 0 || len(data) > maxSize {
-		return "", "", fmt.Errorf("generated image is empty or exceeds the configured media size limit")
+// imageHeaderSniffLen is how many leading decoded bytes are kept to detect the
+// image format with http.DetectContentType.
+const imageHeaderSniffLen = 512
+
+// errGeneratedImageTooLarge is returned by imageSink once the decoded image
+// exceeds the configured media size limit.
+var errGeneratedImageTooLarge = errors.New("generated image exceeds the configured media size limit")
+
+// imageSink writes a decoded image downstream (typically a temp file) while
+// enforcing a maximum size and capturing the leading bytes for format
+// detection. It lets the image pipeline stream to disk instead of buffering the
+// whole decoded image in memory.
+type imageSink struct {
+	w      io.Writer
+	limit  int
+	n      int
+	header []byte
+}
+
+func newImageSink(w io.Writer, limit int) *imageSink {
+	return &imageSink{w: w, limit: limit}
+}
+
+func (s *imageSink) Write(p []byte) (int, error) {
+	if s.n+len(p) > s.limit {
+		return 0, errGeneratedImageTooLarge
 	}
-	prefixLen := len(data)
-	if prefixLen > 512 {
-		prefixLen = 512
+	if len(s.header) < imageHeaderSniffLen {
+		need := imageHeaderSniffLen - len(s.header)
+		if need > len(p) {
+			need = len(p)
+		}
+		s.header = append(s.header, p[:need]...)
 	}
-	contentType := http.DetectContentType(data[:prefixLen])
+	n, err := s.w.Write(p)
+	s.n += n
+	return n, err
+}
+
+// validateGeneratedImage detects the image format from the leading bytes. The
+// media size limit is already enforced by imageSink while the image is written.
+func validateGeneratedImage(header []byte, size int) (string, string, error) {
+	if size == 0 {
+		return "", "", fmt.Errorf("generated image is empty")
+	}
+	contentType := http.DetectContentType(header)
 	switch contentType {
 	case "image/png":
 		return contentType, ".png", nil
