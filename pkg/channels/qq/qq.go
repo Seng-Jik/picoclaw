@@ -187,10 +187,56 @@ func (c *QQChannel) Stop(ctx context.Context) error {
 	return nil
 }
 
+// normalizeChatKind maps a user-supplied chat kind to the two internal values.
+// Returns "" when the value is not recognised.
+func normalizeChatKind(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "c2c", "direct", "user", "private", "dm", "friend":
+		return "direct"
+	case "group", "guild", "channel":
+		return "group"
+	}
+	return ""
+}
+
+// looksLikeWrongChatKind reports whether an API error suggests the message was
+// sent to the wrong endpoint (e.g. a user openid posted to the group endpoint,
+// which QQ answers with 11255 / 40011028 "请求的资源不存在(用户/群已注销)").
+func looksLikeWrongChatKind(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	for _, needle := range []string{"11255", "40011028", "请求的资源不存在", "resource not found", "not found"} {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// chatKindExplicit reports whether this chat's kind was declared in config.
+func (c *QQChannel) chatKindExplicit(chatID string) bool {
+	if c.config == nil {
+		return false
+	}
+	if v, ok := c.config.ChatKinds[chatID]; ok {
+		return normalizeChatKind(v) != ""
+	}
+	return false
+}
+
 // getChatKind returns the chat type for a given chatID ("group" or "direct").
-// Unknown chatIDs default to "group" and log a warning, since QQ group IDs are
-// more common as outbound-only destinations (e.g. reasoning_channel_id).
+// Priority: explicit config (qq.settings.chat_kinds) > learned from an inbound
+// message or from a previous successful probe > fallback "group".
 func (c *QQChannel) getChatKind(chatID string) string {
+	if c.config != nil {
+		if v, ok := c.config.ChatKinds[chatID]; ok {
+			if k := normalizeChatKind(v); k != "" {
+				return k
+			}
+		}
+	}
 	if v, ok := c.chatType.Load(chatID); ok {
 		if k, ok := v.(string); ok {
 			return k
@@ -237,21 +283,51 @@ func (c *QQChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string
 		}
 	}
 
-	// Route to group or C2C.
+	// Route to group or C2C. If the chosen endpoint turns out to be wrong, probe
+	// the other one and remember the answer, so later sends never guess again.
 	var (
 		sentMsg *dto.Message
 		err     error
 	)
-	if chatKind == "group" {
+	kind := chatKind
+	if kind == "group" {
 		sentMsg, err = c.api.PostGroupMessage(ctx, msg.ChatID, msgToCreate)
 	} else {
 		sentMsg, err = c.api.PostC2CMessage(ctx, msg.ChatID, msgToCreate)
 	}
 
+	if err != nil && !c.chatKindExplicit(msg.ChatID) && looksLikeWrongChatKind(err) {
+		alt := "direct"
+		if kind == "direct" {
+			alt = "group"
+		}
+		logger.WarnCF("qq", "Send failed, probing the other chat kind", map[string]any{
+			"chat_id": msg.ChatID,
+			"tried":   kind,
+			"trying":  alt,
+			"error":   err.Error(),
+		})
+		var altMsg *dto.Message
+		var altErr error
+		if alt == "group" {
+			altMsg, altErr = c.api.PostGroupMessage(ctx, msg.ChatID, msgToCreate)
+		} else {
+			altMsg, altErr = c.api.PostC2CMessage(ctx, msg.ChatID, msgToCreate)
+		}
+		if altErr == nil {
+			sentMsg, err, kind = altMsg, nil, alt
+			c.chatType.Store(msg.ChatID, alt) // remember: no more guessing
+			logger.InfoCF("qq", "Chat kind corrected by probe", map[string]any{
+				"chat_id":   msg.ChatID,
+				"chat_kind": alt,
+			})
+		}
+	}
+
 	if err != nil {
 		logger.ErrorCF("qq", "Failed to send message", map[string]any{
 			"chat_id":   msg.ChatID,
-			"chat_kind": chatKind,
+			"chat_kind": kind,
 			"error":     err.Error(),
 		})
 		return nil, fmt.Errorf("qq send: %w", channels.ErrTemporary)

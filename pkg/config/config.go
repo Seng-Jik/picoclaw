@@ -756,6 +756,11 @@ type QQSettings struct {
 	MaxMessageLength     int          `json:"max_message_length"       yaml:"-"                    env:"PICOCLAW_CHANNELS_QQ_MAX_MESSAGE_LENGTH"`
 	MaxBase64FileSizeMiB int64        `json:"max_base64_file_size_mib" yaml:"-"                    env:"PICOCLAW_CHANNELS_QQ_MAX_BASE64_FILE_SIZE_MIB"`
 	SendMarkdown         bool         `json:"send_markdown"            yaml:"-"                    env:"PICOCLAW_CHANNELS_QQ_SEND_MARKDOWN"`
+	// ChatKinds explicitly declares the endpoint kind per chat id, e.g.
+	// {"<user_openid>": "c2c"} or {"<group_openid>": "group"}. A chat id listed
+	// here wins over the learned/guessed kind, so outbound-only destinations
+	// (cron, notifications) are never misrouted.
+	ChatKinds map[string]string `json:"chat_kinds"                   yaml:"-"                    env:"PICOCLAW_CHANNELS_QQ_CHAT_KINDS"`
 }
 
 type DingTalkSettings struct {
