@@ -153,3 +153,8 @@ require (
 )
 
 replace github.com/bwmarrin/discordgo => github.com/yeongaori/discordgo-fork v0.0.0-20260319072544-e8e546f5d532
+
+// QQ OpenAPI requires "Authorization: QQBot <token>"; botgo v0.2.1 sets the
+// resty auth scheme on the *Client* inside OnBeforeRequest, which resty >= v2.17
+// no longer applies per request. Point it at the fix branch (see botgo#60).
+replace github.com/tencent-connect/botgo => github.com/crazysarah/botgo v0.2.2-0.20260904033311-36f7dcea3cf6
