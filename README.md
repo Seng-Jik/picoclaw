@@ -160,7 +160,7 @@ Measured on an Apple M1 Max (macOS arm64, Go 1.27.2) on 2026-10-15 with the scri
 
 PicoClaw's row is its **full default** macOS ARM64 build (`goolm,stdjson`); lighter channel profiles are listed in [measured binary sizes](docs/guides/custom-builds.md#measured-binary-sizes). Its idle RSS is 36.6 MiB, with a **≈19 MiB** memory footprint (`phys_footprint`, what Activity Monitor reports) — the metric behind the "10–20 MB" note above.
 
-Unlike the other rows, PicoClaw's core ships **no full-screen TUI**, so its "first paint / ready" is the time for the gateway to become ready, not a TUI render; use [`picoclaw-cli`](https://github.com/afjcjsbx/picoclaw-cli) when you want an interactive terminal UI. The other agents are interactive TUIs and their figures are single-machine medians of a few runs, so expect them to drift between releases. Reproduce with:
+Unlike the other rows, PicoClaw's core ships **no full-screen TUI**, so its "first paint / ready" is the time for the gateway to become ready, not a TUI render. The other agents are interactive TUIs and their figures are single-machine medians of a few runs, so expect them to drift between releases. Reproduce with:
 
 ```bash
 python3 scripts/bench-picoclaw-runtime.py --binary ./build/picoclaw --runs 15
