@@ -127,6 +127,7 @@ type continuationTarget struct {
 
 const (
 	defaultResponse            = "The model returned an empty response. This may indicate a provider error or token limit."
+	truncatedResponse          = "The model hit the token limit (`max_tokens`) and the response was truncated before any final text. Increase `max_tokens` or shorten the request, then try again."
 	toolLimitResponse          = "I've reached `max_tool_iterations` without a final response. Increase `max_tool_iterations` in config.json if this task needs more tool steps."
 	loopDetectionResponse      = "I stopped because the same tool call was repeated too many times without making progress. Try refining the request or adjusting `loop_detection` in config.json."
 	handledToolResponseSummary = "Requested output delivered via tool attachment."
@@ -148,6 +149,38 @@ const (
 	metadataKeyParentPeerID    = "parent_peer_id"
 	metadataKeyInputAudio      = "voice_input_audio"
 )
+
+// emptyResponseFallback selects the user-facing content used when a turn ends
+// without any assistant text or tool calls. When the model was cut off by the
+// output token limit, a dedicated message is returned so the user knows to raise
+// max_tokens instead of seeing the generic provider-error hint.
+func emptyResponseFallback(ts *turnState) string {
+	if ts == nil {
+		return ""
+	}
+	// Internal turns (heartbeat, subturn) opt out of user-facing fallbacks by
+	// leaving DefaultResponse empty; preserve that behavior.
+	if ts.opts.DefaultResponse == "" {
+		return ""
+	}
+	if isTruncatedFinishReason(ts.GetLastFinishReason()) {
+		return truncatedResponse
+	}
+	return ts.opts.DefaultResponse
+}
+
+// isTruncatedFinishReason reports whether a provider finish_reason means the
+// model stopped because it reached the output token limit. Providers normalize
+// the raw value to "length" (Anthropic/Bedrock/Gemini) or "truncated"
+// (OpenAI-compatible); the raw variants are accepted for safety.
+func isTruncatedFinishReason(reason string) bool {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "length", "truncated", "max_tokens", "max_output_tokens":
+		return true
+	default:
+		return false
+	}
+}
 
 // registerSharedTools registers tools that are shared across all agents (web, message, spawn).
 
