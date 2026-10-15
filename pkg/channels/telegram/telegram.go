@@ -1478,23 +1478,21 @@ func quotedTelegramMediaRefs(
 }
 
 const (
-	// telegramDownloadMaxAttempts bounds how many times a Telegram file fetch
-	// and download is attempted (1 initial try + retries). Transient DNS and
+	// telegramGetFileMaxAttempts bounds how many times the Telegram getFile
+	// metadata call is attempted (1 initial try + retries). Transient DNS and
 	// network failures (e.g. "lookup api.telegram.org: i/o timeout") otherwise
-	// drop the whole incoming message silently.
-	telegramDownloadMaxAttempts = 3
-	// telegramDownloadBackoff is the base delay multiplied by the attempt
-	// number between retries.
-	telegramDownloadBackoff = 500 * time.Millisecond
+	// drop the whole incoming message silently. The subsequent HTTP download
+	// reuses the shared retry policy inside utils.DownloadFile
+	// (utils.DoRequestWithRetry).
+	telegramGetFileMaxAttempts = 3
+	// telegramGetFileBackoff is the base delay multiplied by the attempt number
+	// between getFile retries.
+	telegramGetFileBackoff = 500 * time.Millisecond
 )
 
-// errTelegramDownloadFailed marks a fetch that returned no data at all, which
-// is treated as potentially transient (HTTP 5xx, connection reset, ...).
-var errTelegramDownloadFailed = errors.New("telegram file download failed")
-
-// isTransientTelegramDownloadError reports whether a file fetch/download error
-// is worth retrying. Context cancellation is never retried.
-func isTransientTelegramDownloadError(err error) bool {
+// isTransientTelegramGetFileError reports whether a getFile error is worth
+// retrying. Context cancellation is never retried.
+func isTransientTelegramGetFileError(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return false
 	}
@@ -1512,7 +1510,6 @@ func isTransientTelegramDownloadError(err error) bool {
 		"unexpected eof",
 		"network is unreachable",
 		"tls handshake timeout",
-		errTelegramDownloadFailed.Error(),
 	} {
 		if strings.Contains(msg, needle) {
 			return true
@@ -1521,37 +1518,36 @@ func isTransientTelegramDownloadError(err error) bool {
 	return false
 }
 
-// downloadWithRetry runs fetch up to telegramDownloadMaxAttempts times, retrying
-// only transient network errors with linear backoff. It returns the local path
-// on success, or an empty string once retries are exhausted.
-func (c *TelegramChannel) downloadWithRetry(
-	ctx context.Context,
-	fileID string,
-	fetch func(context.Context) (string, error),
-) string {
+// getFileWithRetry fetches Telegram file metadata, retrying transient network
+// errors with linear backoff. It returns nil once retries are exhausted.
+//
+// The HTTP download that follows (downloadFileWithInfo) is retried by the shared
+// HTTP retry policy inside utils.DownloadFile, so this loop only covers the
+// telego getFile call, which cannot go through utils.DoRequestWithRetry.
+func (c *TelegramChannel) getFileWithRetry(ctx context.Context, fileID string) *telego.File {
 	var lastErr error
 	attempts := 0
 
-	for attempt := 1; attempt <= telegramDownloadMaxAttempts; attempt++ {
+	for attempt := 1; attempt <= telegramGetFileMaxAttempts; attempt++ {
 		attempts = attempt
-		path, err := fetch(ctx)
+		file, err := c.bot.GetFile(ctx, &telego.GetFileParams{FileID: fileID})
 		if err == nil {
 			if attempt > 1 {
-				logger.InfoCF("telegram", "File download succeeded after retry", map[string]any{
+				logger.InfoCF("telegram", "getFile succeeded after retry", map[string]any{
 					"file_id": fileID,
 					"attempt": attempt,
 				})
 			}
-			return path
+			return file
 		}
 		lastErr = err
 
-		if ctx.Err() != nil || attempt == telegramDownloadMaxAttempts || !isTransientTelegramDownloadError(err) {
+		if ctx.Err() != nil || attempt == telegramGetFileMaxAttempts || !isTransientTelegramGetFileError(err) {
 			break
 		}
 
-		backoff := time.Duration(attempt) * telegramDownloadBackoff
-		logger.WarnCF("telegram", "Transient file download error, retrying", map[string]any{
+		backoff := time.Duration(attempt) * telegramGetFileBackoff
+		logger.WarnCF("telegram", "Transient getFile error, retrying", map[string]any{
 			"file_id":    fileID,
 			"attempt":    attempt,
 			"backoff_ms": backoff.Milliseconds(),
@@ -1560,59 +1556,52 @@ func (c *TelegramChannel) downloadWithRetry(
 
 		select {
 		case <-ctx.Done():
-			return ""
+			return nil
 		case <-time.After(backoff):
 		}
 	}
 
 	// Do not log a shutdown as a hard failure.
 	if ctx.Err() == nil && lastErr != nil {
-		logger.ErrorCF("telegram", "Failed to download file", map[string]any{
+		logger.ErrorCF("telegram", "Failed to get file", map[string]any{
 			"file_id":  fileID,
 			"attempts": attempts,
 			"error":    lastErr.Error(),
 		})
 	}
-	return ""
+	return nil
 }
 
 func (c *TelegramChannel) downloadPhoto(ctx context.Context, fileID string) string {
-	return c.downloadWithRetry(ctx, fileID, func(ctx context.Context) (string, error) {
-		file, err := c.bot.GetFile(ctx, &telego.GetFileParams{FileID: fileID})
-		if err != nil {
-			return "", fmt.Errorf("get photo file: %w", err)
-		}
-		return c.downloadFileWithInfoE(file, ".jpg")
-	})
+	file := c.getFileWithRetry(ctx, fileID)
+	if file == nil {
+		return ""
+	}
+	return c.downloadFileWithInfo(file, ".jpg")
 }
 
-func (c *TelegramChannel) downloadFileWithInfoE(file *telego.File, ext string) (string, error) {
+func (c *TelegramChannel) downloadFileWithInfo(file *telego.File, ext string) string {
 	if file == nil || file.FilePath == "" {
-		return "", fmt.Errorf("%w: empty file path", errTelegramDownloadFailed)
+		return ""
 	}
 
 	url := c.bot.FileDownloadURL(file.FilePath)
 	logger.DebugCF("telegram", "File URL", map[string]any{"url": url})
 
-	// Use FilePath as filename for better identification
+	// Use FilePath as filename for better identification. utils.DownloadFile
+	// applies the shared HTTP retry policy (utils.DoRequestWithRetry) internally.
 	filename := file.FilePath + ext
-	path := utils.DownloadFile(url, filename, utils.DownloadOptions{
+	return utils.DownloadFile(url, filename, utils.DownloadOptions{
 		LoggerPrefix: "telegram",
 	})
-	if path == "" {
-		return "", fmt.Errorf("%w: %s", errTelegramDownloadFailed, url)
-	}
-	return path, nil
 }
 
 func (c *TelegramChannel) downloadFile(ctx context.Context, fileID, ext string) string {
-	return c.downloadWithRetry(ctx, fileID, func(ctx context.Context) (string, error) {
-		file, err := c.bot.GetFile(ctx, &telego.GetFileParams{FileID: fileID})
-		if err != nil {
-			return "", fmt.Errorf("get file: %w", err)
-		}
-		return c.downloadFileWithInfoE(file, ext)
-	})
+	file := c.getFileWithRetry(ctx, fileID)
+	if file == nil {
+		return ""
+	}
+	return c.downloadFileWithInfo(file, ext)
 }
 
 func parseContent(text string, useMarkdownV2 bool) string {

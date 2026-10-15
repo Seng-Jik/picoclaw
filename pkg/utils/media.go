@@ -149,7 +149,9 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 		AllowConfiguredProxyFirstHop(req, client.Transport)
 	}
 
-	resp, err := client.Do(req)
+	// Reuse the shared HTTP retry policy (transient network errors, 429 and
+	// 5xx) instead of issuing a single request.
+	resp, err := DoRequestWithRetry(client, req)
 	if err != nil {
 		logger.ErrorCF(opts.LoggerPrefix, "Failed to download file", map[string]any{
 			"error": err.Error(),

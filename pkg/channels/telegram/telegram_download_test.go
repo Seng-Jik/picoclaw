@@ -18,13 +18,6 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 )
 
-func stubSuccessCaller(t *testing.T) *stubCaller {
-	t.Helper()
-	return &stubCaller{callFn: func(context.Context, string, *ta.RequestData) (*ta.Response, error) {
-		return successResponse(t), nil
-	}}
-}
-
 func countAPICalls(caller *stubCaller, needle string) int {
 	count := 0
 	for _, call := range caller.calls {
@@ -35,7 +28,15 @@ func countAPICalls(caller *stubCaller, needle string) int {
 	return count
 }
 
-func TestIsTransientTelegramDownloadError(t *testing.T) {
+func getFileResponse(t *testing.T) *ta.Response {
+	t.Helper()
+	return &ta.Response{
+		Ok:     true,
+		Result: []byte(`{"file_id":"f1","file_unique_id":"u1","file_path":"voice/file_1.oga"}`),
+	}
+}
+
+func TestIsTransientTelegramGetFileError(t *testing.T) {
 	cases := []struct {
 		name string
 		err  error
@@ -49,60 +50,69 @@ func TestIsTransientTelegramDownloadError(t *testing.T) {
 			want: true,
 		},
 		{name: "connection reset", err: errors.New("read tcp 1.2.3.4: connection reset by peer"), want: true},
-		{name: "empty download", err: errTelegramDownloadFailed, want: true},
 		{name: "nil", err: nil, want: false},
 		{name: "context canceled", err: context.Canceled, want: false},
 		{name: "permanent bad request", err: errors.New(`api: 400 "Bad Request: file not found"`), want: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, isTransientTelegramDownloadError(tc.err))
+			assert.Equal(t, tc.want, isTransientTelegramGetFileError(tc.err))
 		})
 	}
 }
 
-func TestDownloadWithRetry_RetriesTransientErrors(t *testing.T) {
-	ch := newTestChannel(t, stubSuccessCaller(t))
+func TestGetFileWithRetry_RetriesTransientErrors(t *testing.T) {
+	calls := 0
+	caller := &stubCaller{
+		callFn: func(_ context.Context, url string, _ *ta.RequestData) (*ta.Response, error) {
+			require.Contains(t, url, "getFile")
+			calls++
+			if calls < telegramGetFileMaxAttempts {
+				return nil, errors.New("telego: getFile: fasthttp do request: lookup api.telegram.org: i/o timeout")
+			}
+			return getFileResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
 
-	attempts := 0
-	got := ch.downloadWithRetry(context.Background(), "file-1", func(context.Context) (string, error) {
-		attempts++
-		if attempts < telegramDownloadMaxAttempts {
-			return "", errors.New("telego: getFile: fasthttp do request: lookup api.telegram.org: i/o timeout")
-		}
-		return "/tmp/voice.ogg", nil
-	})
+	file := ch.getFileWithRetry(context.Background(), "f1")
 
-	require.Equal(t, "/tmp/voice.ogg", got)
-	require.Equal(t, telegramDownloadMaxAttempts, attempts)
+	require.NotNil(t, file)
+	require.Equal(t, telegramGetFileMaxAttempts, calls)
 }
 
-func TestDownloadWithRetry_DoesNotRetryPermanentError(t *testing.T) {
-	ch := newTestChannel(t, stubSuccessCaller(t))
+func TestGetFileWithRetry_DoesNotRetryPermanentError(t *testing.T) {
+	calls := 0
+	caller := &stubCaller{
+		callFn: func(_ context.Context, _ string, _ *ta.RequestData) (*ta.Response, error) {
+			calls++
+			return nil, errors.New(`api: 400 "Bad Request: file not found"`)
+		},
+	}
+	ch := newTestChannel(t, caller)
 
-	attempts := 0
-	got := ch.downloadWithRetry(context.Background(), "file-1", func(context.Context) (string, error) {
-		attempts++
-		return "", errors.New(`api: 400 "Bad Request: file not found"`)
-	})
+	file := ch.getFileWithRetry(context.Background(), "f1")
 
-	require.Empty(t, got)
-	require.Equal(t, 1, attempts)
+	require.Nil(t, file)
+	require.Equal(t, 1, calls)
 }
 
-func TestDownloadWithRetry_StopsOnContextCancellation(t *testing.T) {
-	ch := newTestChannel(t, stubSuccessCaller(t))
-
+func TestGetFileWithRetry_StopsOnContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	attempts := 0
-	got := ch.downloadWithRetry(ctx, "file-1", func(context.Context) (string, error) {
-		attempts++
-		cancel()
-		return "", errors.New("lookup api.telegram.org: i/o timeout")
-	})
+	calls := 0
+	caller := &stubCaller{
+		callFn: func(_ context.Context, _ string, _ *ta.RequestData) (*ta.Response, error) {
+			calls++
+			cancel()
+			return nil, errors.New("lookup api.telegram.org: i/o timeout")
+		},
+	}
+	ch := newTestChannel(t, caller)
 
-	require.Empty(t, got)
-	require.Equal(t, 1, attempts)
+	file := ch.getFileWithRetry(ctx, "f1")
+
+	require.Nil(t, file)
+	require.Equal(t, 1, calls)
 }
 
 // TestDownloadFile_RetriesTransientGetFileFailure exercises the full downloadFile
@@ -178,6 +188,6 @@ func TestHandleMessage_NotifiesUserWhenVoiceDownloadFails(t *testing.T) {
 
 	require.NoError(t, ch.handleMessage(context.Background(), msg))
 
-	require.Equal(t, telegramDownloadMaxAttempts, countAPICalls(caller, "getFile"))
+	require.Equal(t, telegramGetFileMaxAttempts, countAPICalls(caller, "getFile"))
 	require.Equal(t, 1, countAPICalls(caller, "sendMessage"), "user must be told the audio was dropped")
 }

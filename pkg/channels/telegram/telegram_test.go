@@ -215,7 +215,7 @@ func TestSendMedia_ImageFallbacksToDocumentOnInvalidDimensions(t *testing.T) {
 	assert.Equal(t, "caption", constructor.calls[1].Parameters["caption"])
 }
 
-func TestDownloadFileWithInfoE_AllowsLocalConfiguredBaseURL(t *testing.T) {
+func TestDownloadFileWithInfo_AllowsLocalConfiguredBaseURL(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got, want := r.URL.Path, "/file/bot"+testToken+"/photos/image"; got != want {
 			t.Fatalf("request path = %q, want %q", got, want)
@@ -235,8 +235,7 @@ func TestDownloadFileWithInfoE_AllowsLocalConfiguredBaseURL(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	path, err := ch.downloadFileWithInfoE(&telego.File{FilePath: "photos/image"}, "")
-	require.NoError(t, err)
+	path := ch.downloadFileWithInfo(&telego.File{FilePath: "photos/image"}, "")
 	if path == "" {
 		t.Fatal("expected local base_url download to succeed")
 	}
